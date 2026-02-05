@@ -1,0 +1,44 @@
+{
+  "slack_id": {"S": "REPLACE_WITH_YOUR_SLACK_USER_ID"},
+  "email": {"S": "your.email@company.com"},
+  "name": {"S": "Your Name"},
+  "enabled": {"BOOL": true},
+  "jira_config": {
+    "M": {
+      "jira_url": {"S": "https://your-domain.atlassian.net"},
+      "email": {"S": "your.email@company.com"},
+      "api_token": {"S": "REPLACE_WITH_JIRA_API_TOKEN"},
+      "auth_type": {"S": "basic"},
+      "project_key": {"S": "LAN"}
+    }
+  },
+  "gdrive_config": {
+    "M": {
+      "project_id": {"S": "your-gcp-project-id"},
+      "client_email": {"S": "your-service-account@your-project.iam.gserviceaccount.com"},
+      "private_key": {"S": "-----BEGIN PRIVATE KEY-----\\nREPLACE_WITH_YOUR_PRIVATE_KEY\\n-----END PRIVATE KEY-----\\n"},
+      "private_key_id": {"S": ""},
+      "client_id": {"S": ""},
+      "folder_id": {"S": "REPLACE_WITH_GDRIVE_FOLDER_ID"},
+      "folder_name": {"S": "Meet recordings"},
+      "file_filter": {"S": ""}
+    }
+  },
+  "last_processed_transcript": {
+    "M": {
+      "file_id": {"S": ""},
+      "file_name": {"S": ""},
+      "modified_time": {"S": ""},
+      "processed_at": {"S": ""}
+    }
+  },
+  "flow_config": {
+    "M": {
+      "transcripts_only": {"BOOL": false},
+      "notification_channel": {"S": ""},
+      "auto_approve": {"BOOL": false}
+    }
+  },
+  "created_at": {"S": "2026-02-05T20:00:00Z"},
+  "updated_at": {"S": "2026-02-05T20:00:00Z"}
+}
