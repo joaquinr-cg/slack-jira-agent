@@ -510,8 +510,14 @@ class SlackHandler:
 
         # Proposed value
         if proposal.proposed_value:
-            proposed_display = proposal.proposed_value[:500]
-            if len(proposal.proposed_value) > 500:
+            # Handle both string and dict values
+            if isinstance(proposal.proposed_value, dict):
+                import json
+                proposed_str = json.dumps(proposal.proposed_value, indent=2)
+            else:
+                proposed_str = str(proposal.proposed_value)
+            proposed_display = proposed_str[:500]
+            if len(proposed_str) > 500:
                 proposed_display += "..."
             blocks.append(
                 {
