@@ -16,7 +16,8 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd ~/slack-jira-agent
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             docker build -t slack-jira-agent .
             docker-compose down
             docker-compose up -d
