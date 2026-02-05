@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  slack-jira-agent:
+    build: .
+    container_name: slack-jira-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist database
+      - ./data:/app/data
+      # Mount credentials (read-only)
+      - ./credentials:/app/credentials:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

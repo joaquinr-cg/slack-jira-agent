@@ -1,0 +1,16 @@
+# Slack
+slack-bolt>=1.18.0
+slack-sdk>=3.21.0
+aiohttp>=3.9.0
+
+# Async support
+aiosqlite>=0.19.0
+httpx>=0.25.0
+
+# Configuration
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Development
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
