@@ -1,5 +1,6 @@
 """Database manager for JIRA Slack Agent."""
 
+import json
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -25,6 +26,19 @@ class DatabaseManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._initialized = False
+
+    @staticmethod
+    def _serialize_value(value) -> Optional[str]:
+        """Serialize a value to string for SQLite storage.
+
+        If value is a dict or list, serialize to JSON string.
+        Otherwise return as-is (or None).
+        """
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return str(value)
 
     async def initialize(self) -> None:
         """Initialize database schema."""
@@ -359,8 +373,8 @@ class DatabaseManager:
                     proposal.ticket_summary,
                     proposal.change_type,
                     proposal.field_name,
-                    proposal.current_value,
-                    proposal.proposed_value,
+                    self._serialize_value(proposal.current_value),
+                    self._serialize_value(proposal.proposed_value),
                     proposal.source,
                     proposal.source_excerpt,
                     proposal.confidence,
@@ -398,8 +412,8 @@ class DatabaseManager:
                         proposal.ticket_summary,
                         proposal.change_type,
                         proposal.field_name,
-                        proposal.current_value,
-                        proposal.proposed_value,
+                        self._serialize_value(proposal.current_value),
+                        self._serialize_value(proposal.proposed_value),
                         proposal.source,
                         proposal.source_excerpt,
                         proposal.confidence,
