@@ -18,6 +18,6 @@ jobs:
             cd ~/slack-jira-agent
             git fetch origin main
             git reset --hard origin/main
-            docker build -t slack-jira-agent .
+            docker build --no-cache -t slack-jira-agent .
             docker-compose down
             docker-compose up -d
