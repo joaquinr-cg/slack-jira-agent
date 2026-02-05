@@ -308,7 +308,7 @@ class SlackHandler:
                 proposal = Proposal(
                     session_uuid=session.uuid,
                     proposal_id=prop_data.get("proposal_id", f"prop-{len(proposals)+1}"),
-                    ticket_key=prop_data.get("ticket_key", "UNKNOWN"),
+                    ticket_key=prop_data.get("ticket_key") or "NEW",
                     ticket_summary=prop_data.get("ticket_summary"),
                     change_type=prop_data.get("change_type", "update"),
                     field_name=prop_data.get("field"),
