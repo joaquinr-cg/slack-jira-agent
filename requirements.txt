@@ -7,6 +7,9 @@ aiohttp>=3.9.0
 aiosqlite>=0.19.0
 httpx>=0.25.0
 
+# AWS
+boto3>=1.28.0
+
 # Configuration
 pydantic>=2.0.0
 pydantic-settings>=2.0.0

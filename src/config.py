@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     database_path: str = "./data/jira_agent.db"
 
     # ==========================================
+    # AWS / DYNAMODB CONFIGURATION
+    # ==========================================
+    aws_region: str = "us-east-1"
+    dynamodb_table_name: str = "pm_configurations"
+
+    # ==========================================
     # APPLICATION CONFIGURATION
     # ==========================================
     request_timeout: int = 300  # 5 minutes for LLM processing

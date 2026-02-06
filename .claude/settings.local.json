@@ -3,7 +3,9 @@
     "allow": [
       "Bash(git commit:*)",
       "Bash(git add:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python:*)",
+      "Bash(copy \"E:\\\\Work\\\\CloudGeometry\\\\langbuilder\\\\langbuilder\\\\src\\\\backend\\\\base\\\\langbuilder\\\\components\\\\amazon\\\\dynamodb_pm_config_reader.py\" \"E:\\\\Work\\\\CloudGeometry\\\\langbuilder\\\\langbuilder\\\\src\\\\backend\\\\base\\\\langbuilder\\\\components\\\\cloudgeometry\\\\dynamodb_pm_config_reader.py\")"
     ]
   }
 }

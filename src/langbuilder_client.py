@@ -75,6 +75,7 @@ class LangBuilderClient:
         self,
         session_id: str,
         input_data: dict[str, Any],
+        extra_tweaks: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """
         Run the LangBuilder flow with the given input using Run API.
@@ -85,6 +86,8 @@ class LangBuilderClient:
                 - command: The command ("/jira-sync" or "approval_decisions")
                 - messages: List of message texts (for /jira-sync)
                 - decisions: List of approval decisions (for approval_decisions)
+            extra_tweaks: Optional dict of component tweaks to merge
+                (e.g. JIRA/GDrive credentials from DynamoDB PM config)
 
         Returns:
             Raw response from LangBuilder
@@ -92,15 +95,21 @@ class LangBuilderClient:
         input_value_str = json.dumps(input_data)
 
         # Build payload for Run API with tweaks
+        tweaks = {
+            self.CHAT_INPUT_ID: {
+                "input_value": input_value_str
+            }
+        }
+
+        # Merge PM-specific tweaks (JIRA creds, GDrive creds, etc.)
+        if extra_tweaks:
+            tweaks.update(extra_tweaks)
+
         payload = {
             "output_type": "chat",
             "input_type": "chat",
             "session_id": session_id,
-            "tweaks": {
-                self.CHAT_INPUT_ID: {
-                    "input_value": input_value_str
-                }
-            }
+            "tweaks": tweaks,
         }
 
         logger.info("=" * 60)

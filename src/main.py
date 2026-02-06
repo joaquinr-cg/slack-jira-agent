@@ -7,6 +7,7 @@ from typing import Optional
 
 from .config import Settings, get_settings
 from .db import DatabaseManager
+from .dynamodb_client import DynamoDBClient
 from .langbuilder_client import LangBuilderClient
 from .slack_handler import SlackHandler
 
@@ -73,11 +74,20 @@ async def main() -> None:
     )
     logger.info("LangBuilder client initialized (Run API)")
 
+    # Initialize DynamoDB client for PM configurations
+    dynamodb_client = DynamoDBClient(
+        table_name=settings.dynamodb_table_name,
+        region=settings.aws_region,
+    )
+    logger.info("DynamoDB client initialized (table=%s, region=%s)",
+                settings.dynamodb_table_name, settings.aws_region)
+
     # Initialize Slack handler
     _slack_handler = SlackHandler(
         settings=settings,
         db_manager=_db_manager,
         langbuilder_client=langbuilder_client,
+        dynamodb_client=dynamodb_client,
     )
 
     # Log configuration summary
@@ -88,6 +98,7 @@ async def main() -> None:
     logger.info("Request Timeout: %ds", settings.request_timeout)
     logger.info("Mark Emoji: :%s:", settings.mark_emoji)
     logger.info("Database: %s", settings.database_path)
+    logger.info("DynamoDB Table: %s (%s)", settings.dynamodb_table_name, settings.aws_region)
     logger.info("=" * 50)
 
     # Get initial stats

@@ -16,6 +16,7 @@ from .db import (
     ProposalStatus,
     SessionStatus,
 )
+from .dynamodb_client import DynamoDBClient, build_tweaks_from_pm_config
 from .langbuilder_client import (
     LangBuilderClient,
     LangBuilderError,
@@ -34,10 +35,12 @@ class SlackHandler:
         settings: Settings,
         db_manager: DatabaseManager,
         langbuilder_client: LangBuilderClient,
+        dynamodb_client: Optional[DynamoDBClient] = None,
     ):
         self.settings = settings
         self.db = db_manager
         self.langbuilder = langbuilder_client
+        self.dynamodb = dynamodb_client
 
         # Deduplication tracking
         self._processing: Set[str] = set()
@@ -220,36 +223,64 @@ class SlackHandler:
         """Process a /jira-sync command."""
         logger.info("Processing /jira-sync for channel %s by user %s", channel_id, user_id)
 
-        # Get unprocessed marked messages
-        marked_messages = await self.db.get_unprocessed_marked_messages(channel_id)
+        # Fetch PM config from DynamoDB (if available)
+        pm_config = None
+        extra_tweaks = None
+        transcripts_only = False
 
-        if not marked_messages:
-            await client.chat_postEphemeral(
-                channel=channel_id,
-                user=user_id,
-                text=f"No messages marked for JIRA review. "
-                f"Add the :{self.settings.mark_emoji}: emoji to messages first.",
-            )
-            return
+        if self.dynamodb:
+            pm_config = await self.dynamodb.get_pm_config(user_id)
+            if pm_config:
+                extra_tweaks = build_tweaks_from_pm_config(pm_config)
+                transcripts_only = (
+                    pm_config.get("flow_config", {}).get("transcripts_only", False)
+                )
+                logger.info(
+                    "PM config loaded for %s: transcripts_only=%s, tweaks_components=%s",
+                    user_id,
+                    transcripts_only,
+                    list(extra_tweaks.keys()) if extra_tweaks else [],
+                )
+            else:
+                logger.info("No PM config in DynamoDB for %s, using defaults", user_id)
+
+        # Get unprocessed marked messages (skip if transcripts_only mode)
+        marked_messages = []
+        if not transcripts_only:
+            marked_messages = await self.db.get_unprocessed_marked_messages(channel_id)
+
+            if not marked_messages:
+                await client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=f"No messages marked for JIRA review. "
+                    f"Add the :{self.settings.mark_emoji}: emoji to messages first.",
+                )
+                return
 
         # Create session
         session = await self.db.create_session(channel_id, user_id)
 
         # Send processing message
+        if transcripts_only:
+            processing_text = "Processing transcript-only JIRA sync..."
+        else:
+            processing_text = f"Processing {len(marked_messages)} marked messages for JIRA sync..."
         processing_msg = await client.chat_postMessage(
             channel=channel_id,
-            text=f"Processing {len(marked_messages)} marked messages for JIRA sync...",
+            text=processing_text,
         )
 
         try:
-            # Fetch full message content for messages
-            slack_messages = await self._fetch_message_contents(
-                marked_messages, client
-            )
-
-            # Mark messages as processed
-            message_ids = [m.id for m in marked_messages if m.id]
-            await self.db.mark_messages_as_processed(message_ids, session.uuid)
+            # Fetch full message content for messages (empty list for transcripts_only)
+            slack_messages = []
+            if marked_messages:
+                slack_messages = await self._fetch_message_contents(
+                    marked_messages, client
+                )
+                # Mark messages as processed
+                message_ids = [m.id for m in marked_messages if m.id]
+                await self.db.mark_messages_as_processed(message_ids, session.uuid)
 
             # Update session status
             await self.db.update_session_status(session.uuid, SessionStatus.PROCESSING)
@@ -262,18 +293,26 @@ class SlackHandler:
                 "messages": slack_messages,
             }
 
+            # Pass transcripts_only flag so Smart Enrichment can adjust the prompt
+            if transcripts_only:
+                input_data["transcripts_only"] = True
+
             # DEBUG: Log exact input being sent to LangBuilder
             logger.info("=" * 60)
             logger.info("LANGBUILDER INPUT DEBUG")
             logger.info("=" * 60)
             logger.info("Session ID: %s", session.uuid)
             logger.info("Input Data:\n%s", json.dumps(input_data, indent=2))
+            if extra_tweaks:
+                # Log component names only (not secrets)
+                logger.info("Extra tweaks components: %s", list(extra_tweaks.keys()))
             logger.info("=" * 60)
 
             # Send to LangBuilder
             raw_response = await self.langbuilder.run_flow(
                 session_id=session.uuid,
                 input_data=input_data,
+                extra_tweaks=extra_tweaks,
             )
 
             # DEBUG: Log raw response from LangBuilder
@@ -661,6 +700,15 @@ class SlackHandler:
         if not all_proposals:
             return
 
+        # Fetch PM config tweaks for execution (needs JIRA credentials)
+        extra_tweaks = None
+        if self.dynamodb:
+            session = await self.db.get_session(session_uuid)
+            if session:
+                pm_config = await self.dynamodb.get_pm_config(session.triggered_by)
+                if pm_config:
+                    extra_tweaks = build_tweaks_from_pm_config(pm_config)
+
         # Build the decision summary for the LLM
         decisions = []
         for p in all_proposals:
@@ -697,11 +745,14 @@ class SlackHandler:
             logger.info("=" * 60)
             logger.info("Session ID: %s", session_uuid)
             logger.info("Input Data:\n%s", json.dumps(input_data, indent=2))
+            if extra_tweaks:
+                logger.info("Extra tweaks components: %s", list(extra_tweaks.keys()))
             logger.info("=" * 60)
 
             raw_response = await self.langbuilder.run_flow(
                 session_id=session_uuid,
                 input_data=input_data,
+                extra_tweaks=extra_tweaks,
             )
 
             # DEBUG: Log raw response from LangBuilder
