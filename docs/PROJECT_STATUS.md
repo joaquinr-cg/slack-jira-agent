@@ -105,101 +105,91 @@ The JIRA Slack Agent is a multi-tenant system that helps Product Managers (PMs) 
 
 ---
 
-## Pending Work
+## Completed Work (Phases 1 & 4)
 
-### Phase 1: Multi-Tenant Support (High Priority)
+### Phase 1: Multi-Tenant Support - COMPLETED
 
-#### 1.1 Modify Slack Microservice for DynamoDB Integration
+#### 1.1 DynamoDB Client (`src/dynamodb_client.py`)
+- [x] `get_pm_config(slack_id)` - Fetch PM config by Slack ID
+- [x] `update_last_processed(slack_id, transcript_info)` - Track processed transcripts
+- [x] `list_enabled_pms()` - Scan all enabled PMs
+- [x] `create_pm(pm_data)` - Create new PM configuration
+- [x] `update_pm(slack_id, updates)` - Update specific fields
+- [x] `disable_pm(slack_id)` / `enable_pm(slack_id)` - Toggle PM status
+- [x] `build_tweaks_from_pm_config()` - Map DynamoDB config to LangBuilder tweaks
 
-**Files to modify**: `src/slack_handler.py`, `requirements.txt`
+#### 1.2 Slack Microservice DynamoDB Integration
+- [x] `boto3` added to `requirements.txt`
+- [x] `_process_jira_sync()` fetches PM config, builds tweaks, passes to LangBuilder
+- [x] `_send_approval_decisions_to_llm()` also loads PM tweaks for execution phase
+- [x] `transcripts_only` flag read from PM config's `flow_config`
 
-**Tasks**:
-- [ ] Add `boto3` to `requirements.txt`
-- [ ] Create `src/dynamodb_client.py` module:
-  ```python
-  class DynamoDBClient:
-      def get_pm_config(slack_id: str) -> dict
-      def update_last_processed(slack_id: str, transcript_info: dict)
-      def list_enabled_pms() -> list[dict]
-      def create_pm(pm_data: dict)
-      def update_pm(slack_id: str, updates: dict)
-  ```
-- [ ] Modify `_process_jira_sync()` to:
-  1. Fetch PM config from DynamoDB using `slack_id`
-  2. Build tweaks payload from config
-  3. Pass tweaks to LangBuilder API call
+#### 1.3 LangBuilder Client Updates
+- [x] `run_flow()` accepts optional `extra_tweaks` parameter
+- [x] Tweaks merged into payload alongside ChatInput tweaks
 
-**Tweaks payload structure**:
-```python
-payload = {
-    "input_value": {"command": "/jira-sync", "messages": [...]},
-    "tweaks": {
-        "JiraReaderWriter": {
-            "jira_url": pm_config["jira_config"]["jira_url"],
-            "email": pm_config["jira_config"]["email"],
-            "api_token": pm_config["jira_config"]["api_token"],
-            "project_key": pm_config["jira_config"]["project_key"]
-        },
-        "JiraStateFetcher": {
-            # Same as above
-        },
-        "GoogleDriveDocsParserSA": {
-            "project_id": pm_config["gdrive_config"]["project_id"],
-            "client_email": pm_config["gdrive_config"]["client_email"],
-            "private_key": pm_config["gdrive_config"]["private_key"],
-            "folder_id": pm_config["gdrive_config"]["folder_id"]
-        }
-    }
-}
-```
-
-#### 1.2 Update LangBuilder Client
-
-**File**: `src/langbuilder_client.py`
-
-**Tasks**:
-- [ ] Modify `run_flow()` to accept optional `tweaks` parameter
-- [ ] Include tweaks in API request payload
+#### 1.4 Configuration & Infrastructure
+- [x] `config.py` - Added `aws_region`, `dynamodb_table_name` settings
+- [x] `main.py` - Initializes DynamoDB client on startup
+- [x] `.env.example` - Documents all environment variables including AWS/DynamoDB
 
 ---
 
-### Phase 2: Transcripts Only Mode (Medium Priority)
+### Phase 4: PM Onboarding - COMPLETED
+
+#### 4.1 Slack Commands for PM Management (`/jira-agent`)
+
+> **Note**: The `/jira-agent` slash command must be registered in the Slack App configuration
+> (Settings > Slash Commands > Create New Command).
+
+**Implemented commands**:
+- [x] `/jira-agent setup` - Opens full onboarding modal (name, email, JIRA config, GDrive config)
+- [x] `/jira-agent config` - Shows current configuration (ephemeral, secrets masked)
+- [x] `/jira-agent update jira` - Opens modal to update JIRA credentials
+- [x] `/jira-agent update gdrive` - Opens modal to update Google Drive settings
+- [x] `/jira-agent` (no args) - Shows help text with all available commands
+
+**Modal features**:
+- Pre-fills non-sensitive fields when updating existing config
+- Sensitive fields (API token, private key) are never pre-filled
+- "Leave empty to keep current" placeholder for secret fields on updates
+- Secrets stored in `private_metadata` for the setup modal to preserve on re-save
+
+#### 4.2 Admin Commands
+- [x] `/jira-agent admin list` - Lists all enabled PMs with project key and last sync time
+- [x] `/jira-agent admin disable <slack_id>` - Disables a PM
+- [x] `/jira-agent admin enable <slack_id>` - Enables a PM
+- [x] `/jira-agent admin stats` - Shows PM count, sessions, proposals, pending messages
+- [x] Admin check via `ADMIN_USER_IDS` environment variable
+
+---
+
+## Pending Work
+
+### Phase 2: Transcripts Only Mode
 
 #### 2.1 Implement `transcripts_only` Flag
 
 **Purpose**: Allow processing only Google Drive transcripts without requiring Slack messages marked with emoji.
 
-**Flow**:
-1. PM triggers `/jira-sync --transcripts-only` OR
-2. Auto-trigger flow detects new transcript and notifies PM
-3. PM clicks "Generate tickets" button
-4. Microservice calls main flow with `transcripts_only: true`
+**Already done**:
+- [x] `transcripts_only` read from DynamoDB `flow_config` in `_process_jira_sync()`
+- [x] Skips Slack messages when `transcripts_only: true`
+- [x] Passes `transcripts_only` flag to LangBuilder input
 
-**Tasks**:
+**Remaining tasks**:
+- [ ] Support `--transcripts-only` flag in `/jira-sync` command text (override DynamoDB default)
 - [ ] Modify Smart Enrichment component to handle `transcripts_only` in input
-- [ ] When `transcripts_only: true`:
   - Skip Slack messages section in prompt
   - Only include GDrive transcript and JIRA state
-- [ ] Modify microservice to support `--transcripts-only` flag in command
-- [ ] Store default preference in `flow_config.transcripts_only` in DynamoDB
 
 ---
 
-### Phase 3: Auto-Trigger Flow (Lower Priority)
+### Phase 3: Auto-Trigger Flow
 
 #### 3.1 Create DynamoDB Component for LangBuilder
 
-**Purpose**: Allow LangBuilder flows to read PM configurations from DynamoDB.
-
 **File to create**: `langbuilder_components/dynamodb_reader.py`
-
-**Inputs**:
-- `table_name`: DynamoDB table name
-- `aws_region`: AWS region
-- `filter_enabled`: Boolean to only return enabled PMs
-
-**Outputs**:
-- List of PM configurations
 
 **Tasks**:
 - [ ] Create component with AWS SDK integration
@@ -208,13 +198,9 @@ payload = {
 
 #### 3.2 Create Trigger Flow in LangBuilder
 
-**Purpose**: Scheduled flow that checks for new transcripts across all PMs.
-
 **Flow Steps**:
 1. **DynamoDB Reader** → Get all enabled PMs
-2. **Iterator** → For each PM:
-   - Use PM's `gdrive_config` to check latest transcript
-   - Compare `modified_time` with `last_processed_transcript.modified_time`
+2. **Iterator** → For each PM: check latest GDrive transcript vs `last_processed_transcript`
 3. **Filter** → Keep only PMs with new transcripts
 4. **Output** → Return list of `slack_id`s with new content
 
@@ -235,41 +221,8 @@ payload = {
 #### 3.4 Update Last Processed Transcript
 
 **Tasks**:
-- [ ] After successful ticket generation, update DynamoDB:
-  ```python
-  dynamodb.update_pm(slack_id, {
-      "last_processed_transcript": {
-          "file_id": transcript["file_id"],
-          "file_name": transcript["file_name"],
-          "modified_time": transcript["modified_time"],
-          "processed_at": datetime.utcnow().isoformat()
-      }
-  })
-  ```
-
----
-
-### Phase 4: PM Onboarding (Future)
-
-#### 4.1 Slack Commands for PM Management
-
-**Commands**:
-- `/jira-agent setup` - Start onboarding wizard
-- `/jira-agent config` - View current configuration
-- `/jira-agent update jira` - Update JIRA credentials
-- `/jira-agent update gdrive` - Update Google Drive settings
-
-**Tasks**:
-- [ ] Create interactive Slack modals for configuration
-- [ ] Validate credentials before saving
-- [ ] Store in DynamoDB
-
-#### 4.2 Admin Commands
-
-**Commands**:
-- `/jira-agent admin list` - List all configured PMs
-- `/jira-agent admin disable <slack_id>` - Disable a PM
-- `/jira-agent admin stats` - Show usage statistics
+- [ ] After successful ticket generation, call `dynamodb.update_last_processed()`
+  (method already exists in `dynamodb_client.py`)
 
 ---
 
@@ -297,7 +250,7 @@ slack_jira_agent/
 │   │   ├── __init__.py
 │   │   ├── manager.py              # SQLite operations
 │   │   └── models.py               # Data models
-│   ├── dynamodb_client.py          # TO BE CREATED
+│   ├── dynamodb_client.py          # DynamoDB CRUD for PM configs
 │   ├── langbuilder_client.py       # LangBuilder API client
 │   ├── main.py                     # App entry point
 │   └── slack_handler.py            # Slack event handlers
@@ -354,10 +307,19 @@ DYNAMODB_TABLE_NAME=pm_configurations
 - [x] Approved proposals execute JIRA actions
 - [x] `create_issue` proposals work correctly
 
-### After Phase 1
-- [ ] PM config loaded from DynamoDB
-- [ ] Tweaks passed to LangBuilder
-- [ ] Different PMs use different JIRA/GDrive credentials
+### After Phase 1 (Implemented)
+- [x] PM config loaded from DynamoDB
+- [x] Tweaks passed to LangBuilder
+- [ ] Different PMs use different JIRA/GDrive credentials (needs testing with 2+ PMs)
+
+### After Phase 4 (Implemented)
+- [ ] `/jira-agent setup` opens modal and saves to DynamoDB
+- [ ] `/jira-agent config` shows masked config
+- [ ] `/jira-agent update jira` updates JIRA credentials
+- [ ] `/jira-agent update gdrive` updates GDrive credentials
+- [ ] `/jira-agent admin list` lists PMs (admin only)
+- [ ] `/jira-agent admin disable/enable` toggles PM (admin only)
+- [ ] `/jira-agent admin stats` shows statistics (admin only)
 
 ### After Phase 2
 - [ ] `--transcripts-only` flag works
@@ -395,11 +357,3 @@ docker build --no-cache -t slack-jira-agent . && docker-compose up -d
 ### GitHub Repository
 - **URL**: https://github.com/joaquinr-cg/slack-jira-agent
 - **CI/CD**: Automatic deploy on push to `main`
-
----
-
-## Contact & Resources
-
-- **LangBuilder**: https://dev-langbuilder.cloudgeometry.com
-- **AWS Console**: https://console.aws.amazon.com (us-east-1)
-- **Slack App**: Configure at https://api.slack.com/apps

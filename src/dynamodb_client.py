@@ -6,10 +6,11 @@ All methods use asyncio.run_in_executor to avoid blocking the event loop.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import boto3
-from boto3.dynamodb.types import TypeDeserializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,15 @@ class DynamoDBClient:
         self.region = region
         self._client = boto3.client("dynamodb", region_name=region)
         self._deserializer = TypeDeserializer()
+        self._serializer = TypeSerializer()
 
     def _deserialize_item(self, item: dict[str, Any]) -> dict[str, Any]:
         """Deserialize a DynamoDB item to a plain dict."""
         return {k: self._deserializer.deserialize(v) for k, v in item.items()}
+
+    def _serialize_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Serialize a plain dict to DynamoDB item format."""
+        return {k: self._serializer.serialize(v) for k, v in item.items()}
 
     async def get_pm_config(self, slack_id: str) -> Optional[dict[str, Any]]:
         """Fetch PM configuration by Slack user ID.
@@ -118,6 +124,98 @@ class DynamoDBClient:
 
         items = response.get("Items", [])
         return [self._deserialize_item(item) for item in items]
+
+    async def create_pm(self, pm_data: dict[str, Any]) -> None:
+        """Create a new PM configuration.
+
+        Args:
+            pm_data: Dict with keys: slack_id, email, name, jira_config, gdrive_config, etc.
+                     Timestamps (created_at, updated_at) are added automatically.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        item = {
+            "slack_id": pm_data["slack_id"],
+            "email": pm_data.get("email", ""),
+            "name": pm_data.get("name", ""),
+            "enabled": pm_data.get("enabled", True),
+            "jira_config": pm_data.get("jira_config", {}),
+            "gdrive_config": pm_data.get("gdrive_config", {}),
+            "last_processed_transcript": pm_data.get("last_processed_transcript", {
+                "file_id": "", "file_name": "", "modified_time": "", "processed_at": "",
+            }),
+            "flow_config": pm_data.get("flow_config", {
+                "transcripts_only": False,
+                "notification_channel": "",
+                "auto_approve": False,
+            }),
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        serialized = self._serialize_item(item)
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                None,
+                lambda: self._client.put_item(
+                    TableName=self.table_name,
+                    Item=serialized,
+                ),
+            )
+            logger.info("Created PM config for %s", pm_data["slack_id"])
+        except Exception as e:
+            logger.error("DynamoDB put_item failed for %s: %s", pm_data["slack_id"], e)
+            raise
+
+    async def update_pm(self, slack_id: str, updates: dict[str, Any]) -> None:
+        """Update specific fields on a PM configuration.
+
+        Args:
+            slack_id: The Slack user ID.
+            updates: Dict of top-level fields to update (e.g. {"jira_config": {...}}).
+                     updated_at is set automatically.
+        """
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        # Build UpdateExpression dynamically
+        set_parts = []
+        attr_names = {}
+        attr_values = {}
+        for i, (key, value) in enumerate(updates.items()):
+            placeholder_name = f"#k{i}"
+            placeholder_value = f":v{i}"
+            set_parts.append(f"{placeholder_name} = {placeholder_value}")
+            attr_names[placeholder_name] = key
+            attr_values[placeholder_value] = self._serializer.serialize(value)
+
+        update_expr = "SET " + ", ".join(set_parts)
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                None,
+                lambda: self._client.update_item(
+                    TableName=self.table_name,
+                    Key={"slack_id": {"S": slack_id}},
+                    UpdateExpression=update_expr,
+                    ExpressionAttributeNames=attr_names,
+                    ExpressionAttributeValues=attr_values,
+                ),
+            )
+            logger.info("Updated PM config for %s: %s", slack_id, list(updates.keys()))
+        except Exception as e:
+            logger.error("DynamoDB update failed for %s: %s", slack_id, e)
+            raise
+
+    async def disable_pm(self, slack_id: str) -> None:
+        """Disable a PM configuration."""
+        await self.update_pm(slack_id, {"enabled": False})
+        logger.info("Disabled PM %s", slack_id)
+
+    async def enable_pm(self, slack_id: str) -> None:
+        """Enable a PM configuration."""
+        await self.update_pm(slack_id, {"enabled": True})
+        logger.info("Enabled PM %s", slack_id)
 
 
 def build_tweaks_from_pm_config(

@@ -198,6 +198,229 @@ class SlackHandler:
         # INTERACTIVE COMPONENT HANDLERS (Buttons)
         # ==========================================
 
+        # ==========================================
+        # /jira-agent COMMAND (PM ONBOARDING & ADMIN)
+        # ==========================================
+
+        @self.app.command("/jira-agent")
+        async def handle_jira_agent(ack, command: dict, client: AsyncWebClient) -> None:
+            """Handle /jira-agent command with subcommands."""
+            await ack()
+
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+            trigger_id = command["trigger_id"]
+            text = (command.get("text") or "").strip().lower()
+
+            if not self.dynamodb:
+                await client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text="DynamoDB is not configured. PM management is unavailable.",
+                )
+                return
+
+            if text == "setup":
+                await self._open_setup_modal(client, trigger_id, user_id)
+            elif text == "config":
+                await self._show_config(client, channel_id, user_id)
+            elif text == "update jira":
+                await self._open_update_jira_modal(client, trigger_id, user_id)
+            elif text == "update gdrive":
+                await self._open_update_gdrive_modal(client, trigger_id, user_id)
+            elif text == "admin list":
+                if not self.settings.is_admin(user_id):
+                    await client.chat_postEphemeral(
+                        channel=channel_id, user=user_id,
+                        text="You don't have admin permissions.",
+                    )
+                    return
+                await self._admin_list_pms(client, channel_id, user_id)
+            elif text.startswith("admin disable "):
+                if not self.settings.is_admin(user_id):
+                    await client.chat_postEphemeral(
+                        channel=channel_id, user=user_id,
+                        text="You don't have admin permissions.",
+                    )
+                    return
+                target_id = text.replace("admin disable ", "").strip()
+                await self._admin_disable_pm(client, channel_id, user_id, target_id)
+            elif text.startswith("admin enable "):
+                if not self.settings.is_admin(user_id):
+                    await client.chat_postEphemeral(
+                        channel=channel_id, user=user_id,
+                        text="You don't have admin permissions.",
+                    )
+                    return
+                target_id = text.replace("admin enable ", "").strip()
+                await self._admin_enable_pm(client, channel_id, user_id, target_id)
+            elif text == "admin stats":
+                if not self.settings.is_admin(user_id):
+                    await client.chat_postEphemeral(
+                        channel=channel_id, user=user_id,
+                        text="You don't have admin permissions.",
+                    )
+                    return
+                await self._admin_stats(client, channel_id, user_id)
+            else:
+                await client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=(
+                        "*Available commands:*\n"
+                        "`/jira-agent setup` - Configure your JIRA & GDrive credentials\n"
+                        "`/jira-agent config` - View your current configuration\n"
+                        "`/jira-agent update jira` - Update JIRA credentials\n"
+                        "`/jira-agent update gdrive` - Update Google Drive settings\n"
+                        "`/jira-agent admin list` - List all PMs (admin)\n"
+                        "`/jira-agent admin disable <slack_id>` - Disable a PM (admin)\n"
+                        "`/jira-agent admin enable <slack_id>` - Enable a PM (admin)\n"
+                        "`/jira-agent admin stats` - Usage statistics (admin)"
+                    ),
+                )
+
+        # ==========================================
+        # MODAL SUBMISSION HANDLERS
+        # ==========================================
+
+        @self.app.view("pm_setup_modal")
+        async def handle_setup_submission(ack, body: dict, client: AsyncWebClient, view: dict) -> None:
+            """Handle PM setup modal submission."""
+            await ack()
+            user_id = body["user"]["id"]
+            values = view["state"]["values"]
+
+            try:
+                # Resolve secrets: use new value if provided, else keep existing
+                existing_secrets = {}
+                metadata = view.get("private_metadata", "")
+                if metadata:
+                    try:
+                        existing_secrets = json.loads(metadata)
+                    except json.JSONDecodeError:
+                        pass
+
+                jira_token = (
+                    values["jira_token_block"]["jira_token_input"]["value"]
+                    or existing_secrets.get("existing_jira_token", "")
+                )
+                gdrive_key = (
+                    values["gdrive_key_block"]["gdrive_key_input"]["value"]
+                    or existing_secrets.get("existing_gdrive_key", "")
+                )
+
+                pm_data = {
+                    "slack_id": user_id,
+                    "name": values["name_block"]["name_input"]["value"],
+                    "email": values["email_block"]["email_input"]["value"],
+                    "jira_config": {
+                        "jira_url": values["jira_url_block"]["jira_url_input"]["value"],
+                        "email": values["jira_email_block"]["jira_email_input"]["value"],
+                        "api_token": jira_token,
+                        "project_key": values["jira_project_block"]["jira_project_input"]["value"],
+                        "auth_type": "basic",
+                    },
+                    "gdrive_config": {
+                        "project_id": values["gdrive_project_block"]["gdrive_project_input"]["value"],
+                        "client_email": values["gdrive_email_block"]["gdrive_email_input"]["value"],
+                        "private_key": gdrive_key,
+                        "folder_id": values["gdrive_folder_block"]["gdrive_folder_input"]["value"],
+                        "folder_name": (values["gdrive_folder_name_block"]["gdrive_folder_name_input"]["value"] or ""),
+                        "private_key_id": "",
+                        "client_id": "",
+                        "file_filter": "",
+                    },
+                    "flow_config": {
+                        "transcripts_only": False,
+                        "notification_channel": "",
+                        "auto_approve": False,
+                    },
+                }
+                await self.dynamodb.create_pm(pm_data)
+
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text="Your JIRA Agent configuration has been saved. You can now use `/jira-sync` to process messages.",
+                )
+            except Exception as e:
+                logger.exception("Failed to save PM setup")
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text=f"Failed to save configuration: {str(e)}",
+                )
+
+        @self.app.view("pm_update_jira_modal")
+        async def handle_update_jira_submission(ack, body: dict, client: AsyncWebClient, view: dict) -> None:
+            """Handle JIRA update modal submission."""
+            await ack()
+            user_id = body["user"]["id"]
+            values = view["state"]["values"]
+
+            try:
+                # Get current config to preserve fields not in the modal
+                current = await self.dynamodb.get_pm_config(user_id)
+                current_jira = current.get("jira_config", {}) if current else {}
+
+                new_token = values["jira_token_block"]["jira_token_input"]["value"]
+                jira_config = {
+                    "jira_url": values["jira_url_block"]["jira_url_input"]["value"],
+                    "email": values["jira_email_block"]["jira_email_input"]["value"],
+                    "api_token": new_token if new_token else current_jira.get("api_token", ""),
+                    "project_key": values["jira_project_block"]["jira_project_input"]["value"],
+                    "auth_type": current_jira.get("auth_type", "basic"),
+                }
+                await self.dynamodb.update_pm(user_id, {"jira_config": jira_config})
+
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text="JIRA configuration updated.",
+                )
+            except Exception as e:
+                logger.exception("Failed to update JIRA config")
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text=f"Failed to update JIRA config: {str(e)}",
+                )
+
+        @self.app.view("pm_update_gdrive_modal")
+        async def handle_update_gdrive_submission(ack, body: dict, client: AsyncWebClient, view: dict) -> None:
+            """Handle GDrive update modal submission."""
+            await ack()
+            user_id = body["user"]["id"]
+            values = view["state"]["values"]
+
+            try:
+                current = await self.dynamodb.get_pm_config(user_id)
+                current_gdrive = current.get("gdrive_config", {}) if current else {}
+
+                new_key = values["gdrive_key_block"]["gdrive_key_input"]["value"]
+                gdrive_config = {
+                    "project_id": values["gdrive_project_block"]["gdrive_project_input"]["value"],
+                    "client_email": values["gdrive_email_block"]["gdrive_email_input"]["value"],
+                    "private_key": new_key if new_key else current_gdrive.get("private_key", ""),
+                    "folder_id": values["gdrive_folder_block"]["gdrive_folder_input"]["value"],
+                    "folder_name": (values["gdrive_folder_name_block"]["gdrive_folder_name_input"]["value"] or ""),
+                    "private_key_id": current_gdrive.get("private_key_id", ""),
+                    "client_id": current_gdrive.get("client_id", ""),
+                    "file_filter": current_gdrive.get("file_filter", ""),
+                }
+                await self.dynamodb.update_pm(user_id, {"gdrive_config": gdrive_config})
+
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text="Google Drive configuration updated.",
+                )
+            except Exception as e:
+                logger.exception("Failed to update GDrive config")
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text=f"Failed to update GDrive config: {str(e)}",
+                )
+
+        # ==========================================
+        # INTERACTIVE COMPONENT HANDLERS (Buttons)
+        # ==========================================
+
         @self.app.action("approve_proposal")
         async def handle_approve(ack, body: dict, client: AsyncWebClient) -> None:
             """Handle approve button click."""
@@ -825,6 +1048,430 @@ class SlackHandler:
             "folder_name": self.settings.gdrive_folder_name,
             "file_filter": self.settings.gdrive_file_filter,
         }
+
+    # ==========================================
+    # PM ONBOARDING MODALS
+    # ==========================================
+
+    async def _open_setup_modal(
+        self, client: AsyncWebClient, trigger_id: str, user_id: str
+    ) -> None:
+        """Open the full PM setup modal."""
+        # Check if user already has a config
+        existing = await self.dynamodb.get_pm_config(user_id)
+
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text", "text": "Basic Information"}},
+            {
+                "type": "input", "block_id": "name_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "name_input",
+                    **({"initial_value": existing["name"]} if existing and existing.get("name") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Your Name"},
+            },
+            {
+                "type": "input", "block_id": "email_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "email_input",
+                    **({"initial_value": existing["email"]} if existing and existing.get("email") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Email"},
+            },
+            {"type": "divider"},
+            {"type": "header", "text": {"type": "plain_text", "text": "JIRA Configuration"}},
+            {
+                "type": "input", "block_id": "jira_url_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_url_input",
+                    "placeholder": {"type": "plain_text", "text": "https://company.atlassian.net"},
+                    **({"initial_value": existing["jira_config"]["jira_url"]} if existing and existing.get("jira_config", {}).get("jira_url") else {}),
+                },
+                "label": {"type": "plain_text", "text": "JIRA URL"},
+            },
+            {
+                "type": "input", "block_id": "jira_email_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_email_input",
+                    "placeholder": {"type": "plain_text", "text": "you@company.com"},
+                    **({"initial_value": existing["jira_config"]["email"]} if existing and existing.get("jira_config", {}).get("email") else {}),
+                },
+                "label": {"type": "plain_text", "text": "JIRA Email"},
+            },
+            {
+                "type": "input", "block_id": "jira_token_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_token_input",
+                    "placeholder": {"type": "plain_text", "text": "ATATT3x..." if not existing else "Leave empty to keep current"},
+                },
+                "label": {"type": "plain_text", "text": "JIRA API Token"},
+                **({"optional": True} if existing else {}),
+            },
+            {
+                "type": "input", "block_id": "jira_project_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_project_input",
+                    "placeholder": {"type": "plain_text", "text": "LAN"},
+                    **({"initial_value": existing["jira_config"]["project_key"]} if existing and existing.get("jira_config", {}).get("project_key") else {}),
+                },
+                "label": {"type": "plain_text", "text": "JIRA Project Key"},
+            },
+            {"type": "divider"},
+            {"type": "header", "text": {"type": "plain_text", "text": "Google Drive Configuration"}},
+            {
+                "type": "input", "block_id": "gdrive_project_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_project_input",
+                    "placeholder": {"type": "plain_text", "text": "my-gcp-project-123"},
+                    **({"initial_value": existing["gdrive_config"]["project_id"]} if existing and existing.get("gdrive_config", {}).get("project_id") else {}),
+                },
+                "label": {"type": "plain_text", "text": "GCP Project ID"},
+            },
+            {
+                "type": "input", "block_id": "gdrive_email_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_email_input",
+                    "placeholder": {"type": "plain_text", "text": "sa@project.iam.gserviceaccount.com"},
+                    **({"initial_value": existing["gdrive_config"]["client_email"]} if existing and existing.get("gdrive_config", {}).get("client_email") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Service Account Email"},
+            },
+            {
+                "type": "input", "block_id": "gdrive_key_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_key_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "-----BEGIN PRIVATE KEY-----\n..." if not existing else "Leave empty to keep current"},
+                },
+                "label": {"type": "plain_text", "text": "Service Account Private Key"},
+                **({"optional": True} if existing else {}),
+            },
+            {
+                "type": "input", "block_id": "gdrive_folder_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_folder_input",
+                    "placeholder": {"type": "plain_text", "text": "1ABC123xyz"},
+                    **({"initial_value": existing["gdrive_config"]["folder_id"]} if existing and existing.get("gdrive_config", {}).get("folder_id") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Google Drive Folder ID"},
+            },
+            {
+                "type": "input", "block_id": "gdrive_folder_name_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_folder_name_input",
+                    "placeholder": {"type": "plain_text", "text": "Meet recordings"},
+                    **({"initial_value": existing["gdrive_config"]["folder_name"]} if existing and existing.get("gdrive_config", {}).get("folder_name") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Folder Name (optional fallback)"},
+                "optional": True,
+            },
+        ]
+
+        # If updating existing config, handle secrets
+        if existing:
+            jira_token = existing.get("jira_config", {}).get("api_token", "")
+            gdrive_key = existing.get("gdrive_config", {}).get("private_key", "")
+
+            # Store current secrets as private_metadata so submission can use them
+            private_metadata = json.dumps({
+                "existing_jira_token": jira_token,
+                "existing_gdrive_key": gdrive_key,
+            })
+        else:
+            private_metadata = ""
+
+        view = {
+            "type": "modal",
+            "callback_id": "pm_setup_modal",
+            "title": {"type": "plain_text", "text": "JIRA Agent Setup"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": private_metadata,
+            "blocks": blocks,
+        }
+
+        try:
+            await client.views_open(trigger_id=trigger_id, view=view)
+        except Exception as e:
+            logger.exception("Failed to open setup modal")
+
+    async def _open_update_jira_modal(
+        self, client: AsyncWebClient, trigger_id: str, user_id: str
+    ) -> None:
+        """Open modal to update JIRA credentials."""
+        existing = await self.dynamodb.get_pm_config(user_id)
+        jira = existing.get("jira_config", {}) if existing else {}
+
+        blocks = [
+            {
+                "type": "input", "block_id": "jira_url_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_url_input",
+                    **({"initial_value": jira["jira_url"]} if jira.get("jira_url") else {}),
+                },
+                "label": {"type": "plain_text", "text": "JIRA URL"},
+            },
+            {
+                "type": "input", "block_id": "jira_email_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_email_input",
+                    **({"initial_value": jira["email"]} if jira.get("email") else {}),
+                },
+                "label": {"type": "plain_text", "text": "JIRA Email"},
+            },
+            {
+                "type": "input", "block_id": "jira_token_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_token_input",
+                    "placeholder": {"type": "plain_text", "text": "Leave empty to keep current token"},
+                },
+                "label": {"type": "plain_text", "text": "JIRA API Token"},
+                "optional": True,
+            },
+            {
+                "type": "input", "block_id": "jira_project_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "jira_project_input",
+                    **({"initial_value": jira["project_key"]} if jira.get("project_key") else {}),
+                },
+                "label": {"type": "plain_text", "text": "JIRA Project Key"},
+            },
+        ]
+
+        view = {
+            "type": "modal",
+            "callback_id": "pm_update_jira_modal",
+            "title": {"type": "plain_text", "text": "Update JIRA Config"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": blocks,
+        }
+
+        try:
+            await client.views_open(trigger_id=trigger_id, view=view)
+        except Exception as e:
+            logger.exception("Failed to open JIRA update modal")
+
+    async def _open_update_gdrive_modal(
+        self, client: AsyncWebClient, trigger_id: str, user_id: str
+    ) -> None:
+        """Open modal to update Google Drive settings."""
+        existing = await self.dynamodb.get_pm_config(user_id)
+        gdrive = existing.get("gdrive_config", {}) if existing else {}
+
+        blocks = [
+            {
+                "type": "input", "block_id": "gdrive_project_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_project_input",
+                    **({"initial_value": gdrive["project_id"]} if gdrive.get("project_id") else {}),
+                },
+                "label": {"type": "plain_text", "text": "GCP Project ID"},
+            },
+            {
+                "type": "input", "block_id": "gdrive_email_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_email_input",
+                    **({"initial_value": gdrive["client_email"]} if gdrive.get("client_email") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Service Account Email"},
+            },
+            {
+                "type": "input", "block_id": "gdrive_key_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_key_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "Leave empty to keep current key"},
+                },
+                "label": {"type": "plain_text", "text": "Service Account Private Key"},
+                "optional": True,
+            },
+            {
+                "type": "input", "block_id": "gdrive_folder_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_folder_input",
+                    **({"initial_value": gdrive["folder_id"]} if gdrive.get("folder_id") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Google Drive Folder ID"},
+            },
+            {
+                "type": "input", "block_id": "gdrive_folder_name_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "gdrive_folder_name_input",
+                    **({"initial_value": gdrive["folder_name"]} if gdrive.get("folder_name") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Folder Name (optional)"},
+                "optional": True,
+            },
+        ]
+
+        view = {
+            "type": "modal",
+            "callback_id": "pm_update_gdrive_modal",
+            "title": {"type": "plain_text", "text": "Update GDrive Config"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": blocks,
+        }
+
+        try:
+            await client.views_open(trigger_id=trigger_id, view=view)
+        except Exception as e:
+            logger.exception("Failed to open GDrive update modal")
+
+    # ==========================================
+    # CONFIG DISPLAY
+    # ==========================================
+
+    async def _show_config(
+        self, client: AsyncWebClient, channel_id: str, user_id: str
+    ) -> None:
+        """Show the user's current PM configuration."""
+        config = await self.dynamodb.get_pm_config(user_id)
+        if not config:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text="No configuration found. Run `/jira-agent setup` to get started.",
+            )
+            return
+
+        jira = config.get("jira_config", {})
+        gdrive = config.get("gdrive_config", {})
+        flow = config.get("flow_config", {})
+        last = config.get("last_processed_transcript", {})
+
+        # Mask sensitive values
+        token_masked = (jira.get("api_token", "")[:8] + "...") if jira.get("api_token") else "Not set"
+        key_masked = "Configured" if gdrive.get("private_key") else "Not set"
+
+        text = (
+            f"*Your JIRA Agent Configuration*\n\n"
+            f"*Name:* {config.get('name', 'N/A')}\n"
+            f"*Email:* {config.get('email', 'N/A')}\n"
+            f"*Enabled:* {config.get('enabled', False)}\n\n"
+            f"*JIRA:*\n"
+            f"  URL: `{jira.get('jira_url', 'N/A')}`\n"
+            f"  Email: `{jira.get('email', 'N/A')}`\n"
+            f"  API Token: `{token_masked}`\n"
+            f"  Project: `{jira.get('project_key', 'N/A')}`\n\n"
+            f"*Google Drive:*\n"
+            f"  Project ID: `{gdrive.get('project_id', 'N/A')}`\n"
+            f"  Service Account: `{gdrive.get('client_email', 'N/A')}`\n"
+            f"  Private Key: `{key_masked}`\n"
+            f"  Folder ID: `{gdrive.get('folder_id', 'N/A')}`\n"
+            f"  Folder Name: `{gdrive.get('folder_name', 'N/A')}`\n\n"
+            f"*Flow Config:*\n"
+            f"  Transcripts Only: `{flow.get('transcripts_only', False)}`\n"
+            f"  Auto Approve: `{flow.get('auto_approve', False)}`\n\n"
+            f"*Last Processed Transcript:*\n"
+            f"  File: `{last.get('file_name', 'None')}`\n"
+            f"  Processed At: `{last.get('processed_at', 'Never')}`"
+        )
+
+        await client.chat_postEphemeral(channel=channel_id, user=user_id, text=text)
+
+    # ==========================================
+    # ADMIN COMMANDS
+    # ==========================================
+
+    async def _admin_list_pms(
+        self, client: AsyncWebClient, channel_id: str, user_id: str
+    ) -> None:
+        """List all configured PMs."""
+        try:
+            pms = await self.dynamodb.list_enabled_pms()
+        except Exception as e:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"Failed to fetch PM list: {str(e)}",
+            )
+            return
+
+        if not pms:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text="No PMs configured.",
+            )
+            return
+
+        lines = ["*Configured PMs:*\n"]
+        for pm in pms:
+            enabled_icon = "ON" if pm.get("enabled", False) else "OFF"
+            last = pm.get("last_processed_transcript", {})
+            last_processed = last.get("processed_at", "Never") if last.get("processed_at") else "Never"
+            lines.append(
+                f"  <@{pm['slack_id']}> | {pm.get('name', 'N/A')} | "
+                f"`{enabled_icon}` | Project: `{pm.get('jira_config', {}).get('project_key', 'N/A')}` | "
+                f"Last sync: `{last_processed}`"
+            )
+
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="\n".join(lines),
+        )
+
+    async def _admin_disable_pm(
+        self, client: AsyncWebClient, channel_id: str, user_id: str, target_id: str
+    ) -> None:
+        """Disable a PM by Slack ID."""
+        try:
+            await self.dynamodb.disable_pm(target_id)
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"PM <@{target_id}> has been disabled.",
+            )
+        except Exception as e:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"Failed to disable PM: {str(e)}",
+            )
+
+    async def _admin_enable_pm(
+        self, client: AsyncWebClient, channel_id: str, user_id: str, target_id: str
+    ) -> None:
+        """Enable a PM by Slack ID."""
+        try:
+            await self.dynamodb.enable_pm(target_id)
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"PM <@{target_id}> has been enabled.",
+            )
+        except Exception as e:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"Failed to enable PM: {str(e)}",
+            )
+
+    async def _admin_stats(
+        self, client: AsyncWebClient, channel_id: str, user_id: str
+    ) -> None:
+        """Show admin usage statistics."""
+        try:
+            pms = await self.dynamodb.list_enabled_pms()
+            db_stats = await self.db.get_stats()
+        except Exception as e:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"Failed to fetch stats: {str(e)}",
+            )
+            return
+
+        enabled_count = len(pms)
+        text = (
+            f"*JIRA Agent Statistics*\n\n"
+            f"*PMs:*\n"
+            f"  Enabled: `{enabled_count}`\n\n"
+            f"*Sessions:*\n"
+            f"  Total: `{db_stats.get('total_sessions', 0)}`\n"
+            f"  Completed: `{db_stats.get('completed_sessions', 0)}`\n\n"
+            f"*Proposals:*\n"
+            f"  Total: `{db_stats.get('total_proposals', 0)}`\n"
+            f"  Executed: `{db_stats.get('executed_proposals', 0)}`\n\n"
+            f"*Pending:*\n"
+            f"  Marked messages: `{db_stats.get('pending_marked_messages', 0)}`"
+        )
+
+        await client.chat_postEphemeral(channel=channel_id, user=user_id, text=text)
 
     async def start(self) -> None:
         """Start the Slack handler."""
