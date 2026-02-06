@@ -231,7 +231,10 @@ class SlackHandler:
         if self.dynamodb:
             pm_config = await self.dynamodb.get_pm_config(user_id)
             if pm_config:
-                extra_tweaks = build_tweaks_from_pm_config(pm_config)
+                extra_tweaks = build_tweaks_from_pm_config(
+                    pm_config,
+                    default_gdrive=self._get_default_gdrive_config(),
+                )
                 transcripts_only = (
                     pm_config.get("flow_config", {}).get("transcripts_only", False)
                 )
@@ -707,7 +710,10 @@ class SlackHandler:
             if session:
                 pm_config = await self.dynamodb.get_pm_config(session.triggered_by)
                 if pm_config:
-                    extra_tweaks = build_tweaks_from_pm_config(pm_config)
+                    extra_tweaks = build_tweaks_from_pm_config(
+                        pm_config,
+                        default_gdrive=self._get_default_gdrive_config(),
+                    )
 
         # Build the decision summary for the LLM
         decisions = []
@@ -806,6 +812,19 @@ class SlackHandler:
             await self.db.update_session_status(
                 session_uuid, SessionStatus.FAILED, str(e)
             )
+
+    def _get_default_gdrive_config(self) -> dict[str, str]:
+        """Build default GDrive config from shared env settings."""
+        return {
+            "project_id": self.settings.gdrive_project_id,
+            "client_email": self.settings.gdrive_client_email,
+            "private_key": self.settings.gdrive_private_key,
+            "private_key_id": self.settings.gdrive_private_key_id,
+            "client_id": self.settings.gdrive_client_id,
+            "folder_id": self.settings.gdrive_folder_id,
+            "folder_name": self.settings.gdrive_folder_name,
+            "file_filter": self.settings.gdrive_file_filter,
+        }
 
     async def start(self) -> None:
         """Start the Slack handler."""

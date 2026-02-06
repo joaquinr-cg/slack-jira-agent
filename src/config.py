@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     dynamodb_table_name: str = "pm_configurations"
 
     # ==========================================
+    # GOOGLE DRIVE (shared service account)
+    # These are the defaults for all PMs.
+    # PMs can override folder_id and client_email in DynamoDB.
+    # ==========================================
+    gdrive_project_id: str = ""
+    gdrive_client_email: str = ""
+    gdrive_private_key: str = ""
+    gdrive_private_key_id: str = ""
+    gdrive_client_id: str = ""
+    gdrive_folder_id: str = ""
+    gdrive_folder_name: str = ""
+    gdrive_file_filter: str = ""
+
+    # ==========================================
     # APPLICATION CONFIGURATION
     # ==========================================
     request_timeout: int = 300  # 5 minutes for LLM processing

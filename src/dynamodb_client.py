@@ -120,20 +120,27 @@ class DynamoDBClient:
         return [self._deserialize_item(item) for item in items]
 
 
-def build_tweaks_from_pm_config(pm_config: dict[str, Any]) -> dict[str, Any]:
+def build_tweaks_from_pm_config(
+    pm_config: dict[str, Any],
+    default_gdrive: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Build LangBuilder tweaks payload from a PM configuration.
 
     Maps DynamoDB PM config fields to the LangBuilder component inputs
     so each PM's own JIRA/GDrive credentials are injected at runtime.
 
+    GDrive uses shared service account credentials from default_gdrive,
+    with PMs able to override folder_id and client_email in DynamoDB.
+
     Args:
         pm_config: PM configuration dict from DynamoDB.
+        default_gdrive: Shared GDrive service account config from Settings.
 
     Returns:
         Tweaks dict keyed by component name.
     """
     jira = pm_config.get("jira_config", {})
-    gdrive = pm_config.get("gdrive_config", {})
+    pm_gdrive = pm_config.get("gdrive_config", {})
 
     tweaks: dict[str, Any] = {}
 
@@ -149,17 +156,25 @@ def build_tweaks_from_pm_config(pm_config: dict[str, Any]) -> dict[str, Any]:
         tweaks["JiraReaderWriter"] = jira_tweaks
         tweaks["JiraStateFetcher"] = jira_tweaks.copy()
 
-    # Google Drive credentials
-    if gdrive:
-        tweaks["GoogleDriveDocsParserSA"] = {
-            "project_id": gdrive.get("project_id", ""),
-            "client_email": gdrive.get("client_email", ""),
-            "private_key": gdrive.get("private_key", ""),
-            "private_key_id": gdrive.get("private_key_id", ""),
-            "client_id": gdrive.get("client_id", ""),
-            "folder_id": gdrive.get("folder_id", ""),
-            "folder_name": gdrive.get("folder_name", ""),
-            "file_filter": gdrive.get("file_filter", ""),
-        }
+    # Google Drive: shared service account + per-PM overrides for folder_id & client_email
+    base_gdrive = default_gdrive or {}
+    gdrive_tweaks = {
+        "project_id": base_gdrive.get("project_id", ""),
+        "client_email": base_gdrive.get("client_email", ""),
+        "private_key": base_gdrive.get("private_key", ""),
+        "private_key_id": base_gdrive.get("private_key_id", ""),
+        "client_id": base_gdrive.get("client_id", ""),
+        "folder_id": base_gdrive.get("folder_id", ""),
+        "folder_name": base_gdrive.get("folder_name", ""),
+        "file_filter": base_gdrive.get("file_filter", ""),
+    }
+
+    # PM overrides: only folder_id and client_email
+    if pm_gdrive.get("folder_id"):
+        gdrive_tweaks["folder_id"] = pm_gdrive["folder_id"]
+    if pm_gdrive.get("client_email"):
+        gdrive_tweaks["client_email"] = pm_gdrive["client_email"]
+
+    tweaks["GoogleDriveDocsParserSA"] = gdrive_tweaks
 
     return tweaks
