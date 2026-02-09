@@ -194,12 +194,11 @@ class JiraReaderWriterComponent(Component):
             tool_mode=True,
             advanced=True,
         ),
-        DropdownInput(
+        MessageTextInput(
             name="priority",
             display_name="Priority",
-            options=["", "Highest", "High", "Medium", "Low", "Lowest"],
             value="",
-            info="Priority for Create/Update Issue",
+            info="Priority for Create/Update Issue (e.g. Highest, High, Medium, Low, Lowest, Major, Minor, Critical, Blocker, Trivial)",
             tool_mode=True,
             advanced=True,
         ),
