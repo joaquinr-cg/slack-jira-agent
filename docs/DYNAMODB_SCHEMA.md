@@ -218,37 +218,45 @@ dynamodb.put_item(
 
 When the microservice calls the main flow, it maps DynamoDB fields to component tweaks:
 
+**Jira Tickets flow** (uses component instance IDs):
+
 ```python
 payload = {
     "input_value": {...},
     "tweaks": {
-        "JiraReaderWriter": {
-            "jira_url": pm["jira_config"]["jira_url"],
-            "email": pm["jira_config"]["email"],
-            "api_token": pm["jira_config"]["api_token"],
-            "auth_type": pm["jira_config"]["auth_type"],
-            "project_key": pm["jira_config"]["project_key"]
+        "CustomComponent-MvTpp": {       # JiraReaderWriter
+            "jira_url": ..., "email": ..., "api_token": ...,
+            "auth_type": ..., "project_key": ...
         },
-        "JiraStateFetcher": {
-            "jira_url": pm["jira_config"]["jira_url"],
-            "email": pm["jira_config"]["email"],
-            "api_token": pm["jira_config"]["api_token"],
-            "auth_type": pm["jira_config"]["auth_type"],
-            "project_key": pm["jira_config"]["project_key"]
+        "CustomComponent-h9t4Q": {       # JiraStateFetcher
+            "jira_url": ..., "email": ..., "api_token": ...,
+            "auth_type": ..., "project_key": ...
         },
-        "GoogleDriveDocsParserSA": {
-            "project_id": pm["gdrive_config"]["project_id"],
-            "client_email": pm["gdrive_config"]["client_email"],
-            "private_key": pm["gdrive_config"]["private_key"],
-            "private_key_id": pm["gdrive_config"].get("private_key_id", ""),
-            "client_id": pm["gdrive_config"].get("client_id", ""),
-            "folder_id": pm["gdrive_config"]["folder_id"],
-            "folder_name": pm["gdrive_config"].get("folder_name", ""),
-            "file_filter": pm["gdrive_config"].get("file_filter", "")
+        "CustomComponent-swCo4": {       # GoogleDriveDocsParserSA
+            "project_id": ..., "client_email": ..., "private_key": ...,
+            "private_key_id": ..., "client_id": ...,
+            "folder_id": ..., "folder_name": ..., "file_filter": ...
         }
     }
 }
 ```
+
+**Trigger flow** (only GDrive credentials):
+
+```python
+payload = {
+    "input_value": {...},
+    "tweaks": {
+        "TranscriptTrigger-NxiAw": {     # TranscriptTrigger
+            "project_id": ..., "client_email": ..., "private_key": ...,
+            "private_key_id": ..., "client_id": ...,
+            "folder_id": ..., "folder_name": ..., "file_filter": ...
+        }
+    }
+}
+```
+
+> **Note**: GDrive tweaks use shared service account from env vars as base, with per-PM overrides for `folder_id` and `client_email`.
 
 ## Security Considerations
 

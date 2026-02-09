@@ -26,15 +26,15 @@ A modal will open asking for:
 | | JIRA Email | Email associated with your JIRA account |
 | | JIRA API Token | API token from [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens) |
 | | JIRA Project Key | The project key prefix (e.g. `LAN`, `PROJ`) |
-| **Google Drive** | GCP Project ID | Google Cloud project for the shared service account |
-| | Service Account Email | The service account email (ends with `.iam.gserviceaccount.com`) |
-| | Private Key | Service account private key (PEM format). Your admin may provide this |
-| | Folder ID | The Google Drive folder ID containing meeting transcripts |
-| | Folder Name | Fallback folder name if Folder ID is not provided |
+| **Google Drive** | GCP Project ID | Google Cloud project (optional — uses shared default if empty) |
+| | Service Account Email | Service account email (optional — uses shared default if empty) |
+| | Private Key | Service account private key (optional — uses shared default if empty) |
+| | Folder ID | The Google Drive folder ID containing your meeting transcripts |
+| | Folder Name | Fallback folder name if Folder ID is not provided (optional) |
 
 Click **Save**. You'll receive a confirmation DM from the bot.
 
-> **Note**: Your admin may have already set up a shared Google Drive service account. In that case, you may only need to provide your JIRA credentials and a Google Drive folder ID. Ask your admin.
+> **Note**: Your admin has set up a shared Google Drive service account. You only need to provide your **JIRA credentials** and a **Google Drive Folder ID**. The GCP Project ID, Service Account Email, and Private Key fields can be left empty — they fall back to the shared defaults.
 
 ### Step 2: Mark Messages for Review
 
@@ -82,6 +82,7 @@ Once all proposals are reviewed, approved changes are automatically executed in 
 | `/jira-agent config` | View your current configuration (sensitive values are masked) |
 | `/jira-agent update jira` | Update only your JIRA credentials |
 | `/jira-agent update gdrive` | Update only your Google Drive settings |
+| `/jira-agent check-transcripts` | Manually check for new transcripts now (instead of waiting for scheduler) |
 | `/jira-agent` | Show help text with all available commands |
 
 ### `/jira-sync` - Trigger Analysis
@@ -89,6 +90,7 @@ Once all proposals are reviewed, approved changes are automatically executed in 
 | Command | Description |
 |---------|-------------|
 | `/jira-sync` | Process all :ticket:-marked messages in the current channel |
+| `/jira-sync --transcripts-only` | Analyze only the latest transcript (skip Slack messages) |
 
 ### `/jira-review` - Mark for Review
 
@@ -106,10 +108,13 @@ If your admin has enabled the transcript scheduler, the system automatically che
 
 When a new transcript is detected:
 1. You'll receive a Slack DM listing the new file(s)
-2. If auto-sync is enabled, a JIRA sync runs automatically in transcript-only mode
-3. You'll receive a summary of the results via DM
+2. The message includes a **"Generate Tickets from Latest Transcript"** button
+3. Click the button to trigger a JIRA sync in transcript-only mode
+4. You'll receive proposals with Approve/Reject buttons (same as `/jira-sync`)
 
 The system tracks which transcripts have already been processed to avoid duplicates.
+
+You can also manually trigger a check at any time with `/jira-agent check-transcripts`.
 
 ---
 
