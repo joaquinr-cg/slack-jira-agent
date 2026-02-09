@@ -107,8 +107,8 @@ class TranscriptScheduler:
 
     async def _check_pm(
         self, pm_config: dict[str, Any], default_gdrive: dict[str, str]
-    ) -> None:
-        """Check a single PM for new transcripts."""
+    ) -> bool:
+        """Check a single PM for new transcripts. Returns True if new transcripts found."""
         slack_id = pm_config["slack_id"]
         pm_gdrive = pm_config.get("gdrive_config", {})
 
@@ -155,7 +155,7 @@ class TranscriptScheduler:
         result = self._parse_trigger_response(raw_response)
         if not result or not result.get("has_new_transcripts"):
             logger.info("No new transcripts for PM %s", slack_id)
-            return
+            return False
 
         new_files = result.get("new_files", [])
         logger.info(
@@ -212,6 +212,7 @@ class TranscriptScheduler:
             blocks=blocks,
         )
         logger.info("Sent transcript notification with button to PM %s", slack_id)
+        return True
 
     @staticmethod
     def _parse_trigger_response(raw: dict[str, Any]) -> Optional[dict[str, Any]]:

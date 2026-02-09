@@ -1119,7 +1119,12 @@ class SlackHandler:
 
         try:
             default_gdrive = self._get_default_gdrive_config()
-            await self._scheduler._check_pm(pm_config, default_gdrive)
+            found = await self._scheduler._check_pm(pm_config, default_gdrive)
+            if not found:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="No new transcripts found. Latest transcript has already been processed.",
+                )
         except Exception as e:
             logger.exception("Manual transcript check failed for %s", user_id)
             await client.chat_postEphemeral(
