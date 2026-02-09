@@ -101,6 +101,7 @@ async def main() -> None:
         dynamodb_client=dynamodb_client,
         slack_client=_slack_handler.app.client,
     )
+    _slack_handler.set_scheduler(_scheduler)
     _scheduler.start()
 
     # Log configuration summary

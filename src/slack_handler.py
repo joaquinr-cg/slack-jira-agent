@@ -44,10 +44,15 @@ class SlackHandler:
 
         # Deduplication tracking
         self._processing: Set[str] = set()
+        self._scheduler = None
 
         # Initialize Slack app
         self.app = AsyncApp(token=settings.slack_bot_token)
         self._bot_user_id: Optional[str] = None
+
+    def set_scheduler(self, scheduler) -> None:
+        """Set the transcript scheduler for manual trigger support."""
+        self._scheduler = scheduler
 
         # Register handlers
         self._register_handlers()
@@ -258,6 +263,8 @@ class SlackHandler:
                     return
                 target_id = text.replace("admin enable ", "").strip()
                 await self._admin_enable_pm(client, channel_id, user_id, target_id)
+            elif text == "check-transcripts":
+                await self._manual_check_transcripts(client, channel_id, user_id)
             elif text == "admin stats":
                 if not self.settings.is_admin(user_id):
                     await client.chat_postEphemeral(
@@ -276,6 +283,7 @@ class SlackHandler:
                         "`/jira-agent config` - View your current configuration\n"
                         "`/jira-agent update jira` - Update JIRA credentials\n"
                         "`/jira-agent update gdrive` - Update Google Drive settings\n"
+                        "`/jira-agent check-transcripts` - Manually check for new transcripts\n"
                         "`/jira-agent admin list` - List all PMs (admin)\n"
                         "`/jira-agent admin disable <slack_id>` - Disable a PM (admin)\n"
                         "`/jira-agent admin enable <slack_id>` - Enable a PM (admin)\n"
@@ -1084,6 +1092,40 @@ class SlackHandler:
             "folder_name": self.settings.gdrive_folder_name,
             "file_filter": self.settings.gdrive_file_filter,
         }
+
+    async def _manual_check_transcripts(
+        self, client: AsyncWebClient, channel_id: str, user_id: str
+    ) -> None:
+        """Manually trigger transcript check for the requesting PM."""
+        if not self._scheduler:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text="Transcript scheduler is not available.",
+            )
+            return
+
+        pm_config = await self.dynamodb.get_pm_config(user_id)
+        if not pm_config:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text="No configuration found. Run `/jira-agent setup` first.",
+            )
+            return
+
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="Checking for new transcripts...",
+        )
+
+        try:
+            default_gdrive = self._get_default_gdrive_config()
+            await self._scheduler._check_pm(pm_config, default_gdrive)
+        except Exception as e:
+            logger.exception("Manual transcript check failed for %s", user_id)
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"Transcript check failed: {e}",
+            )
 
     # ==========================================
     # PM ONBOARDING MODALS
