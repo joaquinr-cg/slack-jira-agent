@@ -16,7 +16,11 @@ import uuid
 from typing import Any, Optional
 
 from .config import Settings
-from .dynamodb_client import TRIGGER_COMPONENT_ID_TRANSCRIPT, DynamoDBClient
+from .dynamodb_client import (
+    TRIGGER_CHAT_INPUT_ID,
+    TRIGGER_COMPONENT_ID_TRANSCRIPT,
+    DynamoDBClient,
+)
 from .langbuilder_client import LangBuilderClient, LangBuilderError
 
 logger = logging.getLogger(__name__)
@@ -134,6 +138,7 @@ class TranscriptScheduler:
             flow_id=self.settings.trigger_flow_id,
             api_key=self.langbuilder.api_key,
             timeout=self.langbuilder.timeout,
+            chat_input_id=TRIGGER_CHAT_INPUT_ID,
         )
 
         session_id = str(uuid.uuid4())

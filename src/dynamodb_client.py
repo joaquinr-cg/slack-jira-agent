@@ -225,6 +225,7 @@ COMPONENT_ID_JIRA_READER_WRITER = "CustomComponent-MvTpp"  # JiraReaderWriter (r
 
 # LangBuilder flow component instance IDs (from the deployed trigger/automatic-parser flow)
 TRIGGER_COMPONENT_ID_TRANSCRIPT = "TranscriptTrigger-NxiAw"
+TRIGGER_CHAT_INPUT_ID = "ChatInput-jeWM0"
 
 
 def build_tweaks_from_pm_config(
