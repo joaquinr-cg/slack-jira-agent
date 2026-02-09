@@ -218,6 +218,15 @@ class DynamoDBClient:
         logger.info("Enabled PM %s", slack_id)
 
 
+# LangBuilder flow component instance IDs (from the deployed jira-tickets flow)
+COMPONENT_ID_GDRIVE_PARSER = "CustomComponent-swCo4"      # GoogleDriveDocsParserSA
+COMPONENT_ID_JIRA_STATE_FETCHER = "CustomComponent-h9t4Q"  # JiraStateFetcher (read)
+COMPONENT_ID_JIRA_READER_WRITER = "CustomComponent-MvTpp"  # JiraReaderWriter (read/write)
+
+# LangBuilder flow component instance IDs (from the deployed trigger/automatic-parser flow)
+TRIGGER_COMPONENT_ID_TRANSCRIPT = "TranscriptTrigger-NxiAw"
+
+
 def build_tweaks_from_pm_config(
     pm_config: dict[str, Any],
     default_gdrive: Optional[dict[str, Any]] = None,
@@ -235,7 +244,7 @@ def build_tweaks_from_pm_config(
         default_gdrive: Shared GDrive service account config from Settings.
 
     Returns:
-        Tweaks dict keyed by component name.
+        Tweaks dict keyed by component instance ID.
     """
     jira = pm_config.get("jira_config", {})
     pm_gdrive = pm_config.get("gdrive_config", {})
@@ -251,8 +260,8 @@ def build_tweaks_from_pm_config(
             "auth_type": jira.get("auth_type", "basic"),
             "project_key": jira.get("project_key", ""),
         }
-        tweaks["JiraReaderWriter"] = jira_tweaks
-        tweaks["JiraStateFetcher"] = jira_tweaks.copy()
+        tweaks[COMPONENT_ID_JIRA_READER_WRITER] = jira_tweaks
+        tweaks[COMPONENT_ID_JIRA_STATE_FETCHER] = jira_tweaks.copy()
 
     # Google Drive: shared service account + per-PM overrides for folder_id & client_email
     base_gdrive = default_gdrive or {}
@@ -273,6 +282,6 @@ def build_tweaks_from_pm_config(
     if pm_gdrive.get("client_email"):
         gdrive_tweaks["client_email"] = pm_gdrive["client_email"]
 
-    tweaks["GoogleDriveDocsParserSA"] = gdrive_tweaks
+    tweaks[COMPONENT_ID_GDRIVE_PARSER] = gdrive_tweaks
 
     return tweaks
