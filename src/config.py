@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     gdrive_file_filter: str = ""
 
     # ==========================================
+    # TRIGGER FLOW CONFIGURATION
+    # Separate LangBuilder flow that checks GDrive for new transcripts.
+    # When new transcripts are found, automatically triggers the main
+    # jira-sync flow in transcripts_only mode.
+    # ==========================================
+    trigger_flow_id: Optional[str] = None  # LangBuilder flow ID for transcript detection
+    trigger_interval_minutes: int = 10  # How often to check for new transcripts
+    trigger_auto_sync: bool = True  # Auto-trigger jira-sync when new transcripts found
+
+    # ==========================================
     # APPLICATION CONFIGURATION
     # ==========================================
     request_timeout: int = 300  # 5 minutes for LLM processing

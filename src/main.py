@@ -10,12 +10,14 @@ from .db import DatabaseManager
 from .dynamodb_client import DynamoDBClient
 from .langbuilder_client import LangBuilderClient
 from .slack_handler import SlackHandler
+from .transcript_scheduler import TranscriptScheduler
 
 logger = logging.getLogger(__name__)
 
 # Global references for cleanup
 _db_manager: Optional[DatabaseManager] = None
 _slack_handler: Optional[SlackHandler] = None
+_scheduler: Optional[TranscriptScheduler] = None
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -36,6 +38,8 @@ def setup_logging(level: str = "INFO") -> None:
 async def shutdown() -> None:
     """Cleanup on shutdown."""
     logger.info("Shutting down...")
+    if _scheduler:
+        await _scheduler.stop()
     logger.info("Shutdown complete")
 
 
@@ -90,11 +94,22 @@ async def main() -> None:
         dynamodb_client=dynamodb_client,
     )
 
+    # Start transcript scheduler (polls GDrive for new transcripts)
+    _scheduler = TranscriptScheduler(
+        settings=settings,
+        langbuilder_client=langbuilder_client,
+        dynamodb_client=dynamodb_client,
+        slack_client=_slack_handler.app.client,
+    )
+    _scheduler.start()
+
     # Log configuration summary
     logger.info("=" * 50)
     logger.info("JIRA Slack Agent Configuration")
     logger.info("=" * 50)
     logger.info("LangBuilder Flow: %s", settings.langbuilder_flow_id)
+    logger.info("Trigger Flow: %s", settings.trigger_flow_id or "disabled")
+    logger.info("Trigger Interval: %d min", settings.trigger_interval_minutes)
     logger.info("Request Timeout: %ds", settings.request_timeout)
     logger.info("Mark Emoji: :%s:", settings.mark_emoji)
     logger.info("Database: %s", settings.database_path)
