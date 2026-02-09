@@ -2,12 +2,12 @@
 Transcript Trigger - Custom LangBuilder Component
 
 All-in-one component for the trigger flow:
-1. Receives PM config from DynamoDB (via HandleInput) containing last_processed_transcript
+1. Parses the input JSON (slack_id, last_processed) from ChatInput
 2. Fetches the latest Google Doc from GDrive (reuses GoogleDriveDocsParserSA patterns)
 3. Compares timestamps against last_processed
 4. Returns JSON result indicating whether new transcripts exist
 
-Flow: ChatInput → DynamoDB PM Config Reader → TranscriptTrigger → ChatOutput
+This keeps the trigger flow to just 3 nodes: ChatInput → TranscriptTrigger → ChatOutput
 """
 
 import json

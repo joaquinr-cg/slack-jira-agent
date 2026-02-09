@@ -160,80 +160,40 @@ class TranscriptScheduler:
                 },
             )
 
-        # Notify PM in Slack
+        # Notify PM in Slack with a button to generate tickets
         file_list = "\n".join(f"• {f.get('name', 'unknown')}" for f in new_files)
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*New meeting transcript(s) detected:*\n{file_list}",
+                },
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Generate Tickets from Latest Transcript",
+                            "emoji": True,
+                        },
+                        "style": "primary",
+                        "action_id": "generate_from_transcript",
+                        "value": json.dumps({"slack_id": slack_id}),
+                    },
+                ],
+            },
+        ]
+
         await self.slack.chat_postMessage(
             channel=slack_id,
             text=f"New meeting transcript(s) detected:\n{file_list}",
+            blocks=blocks,
         )
-
-        # Auto-trigger the main jira-sync flow in transcripts_only mode
-        if self.settings.trigger_auto_sync:
-            await self._trigger_jira_sync(pm_config, extra_tweaks, slack_id)
-
-    async def _trigger_jira_sync(
-        self,
-        pm_config: dict[str, Any],
-        extra_tweaks: dict[str, Any],
-        slack_id: str,
-    ) -> None:
-        """Trigger the main jira-sync flow in transcripts_only mode."""
-        logger.info("Auto-triggering jira-sync (transcripts_only) for PM %s", slack_id)
-
-        await self.slack.chat_postMessage(
-            channel=slack_id,
-            text="Automatically running JIRA sync on new transcript...",
-        )
-
-        session_id = str(uuid.uuid4())
-        try:
-            raw_response = await self.langbuilder.run_flow(
-                session_id=session_id,
-                input_data={
-                    "command": "/jira-sync",
-                    "messages": [],
-                    "transcripts_only": True,
-                },
-                extra_tweaks=extra_tweaks,
-            )
-            logger.info("Auto jira-sync completed for PM %s (session=%s)", slack_id, session_id)
-
-            # Notify PM with the result
-            result_text = self._extract_summary(raw_response)
-            await self.slack.chat_postMessage(
-                channel=slack_id,
-                text=f"JIRA sync complete:\n{result_text}",
-            )
-        except LangBuilderError as e:
-            logger.error("Auto jira-sync failed for PM %s: %s", slack_id, e)
-            await self.slack.chat_postMessage(
-                channel=slack_id,
-                text=f"Automatic JIRA sync failed: {e}",
-            )
-
-    @staticmethod
-    def _extract_summary(raw_response: dict[str, Any]) -> str:
-        """Pull the analysis_summary from a jira-sync response."""
-        try:
-            message = (
-                raw_response.get("outputs", [{}])[0]
-                .get("outputs", [{}])[0]
-                .get("artifacts", {})
-                .get("message", "")
-            )
-            if not message:
-                return "No summary available."
-            content = message.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            data = json.loads(content.strip())
-            return data.get("analysis_summary", content[:500])
-        except (IndexError, KeyError, TypeError, json.JSONDecodeError):
-            return "Completed (could not parse summary)."
+        logger.info("Sent transcript notification with button to PM %s", slack_id)
 
     @staticmethod
     def _parse_trigger_response(raw: dict[str, Any]) -> Optional[dict[str, Any]]:

@@ -176,6 +176,10 @@ class SlackHandler:
 
             channel_id = command["channel_id"]
             user_id = command["user_id"]
+            command_text = (command.get("text") or "").strip().lower()
+
+            # Parse --transcripts-only flag from command text
+            transcripts_only_override = "transcripts-only" in command_text or "transcripts_only" in command_text
 
             # Check for deduplication
             sync_key = f"sync:{channel_id}:{user_id}"
@@ -190,7 +194,7 @@ class SlackHandler:
             self._processing.add(sync_key)
 
             try:
-                await self._process_jira_sync(channel_id, user_id, client)
+                await self._process_jira_sync(channel_id, user_id, client, transcripts_only_override)
             finally:
                 self._processing.discard(sync_key)
 
@@ -437,11 +441,45 @@ class SlackHandler:
                 body, client, ProposalStatus.REJECTED
             )
 
+        @self.app.action("generate_from_transcript")
+        async def handle_generate_from_transcript(ack, body: dict, client: AsyncWebClient) -> None:
+            """Handle 'Generate Tickets from Latest Transcript' button click."""
+            await ack()
+
+            user_id = body["user"]["id"]
+            channel_id = body["channel"]["id"]
+            message_ts = body["message"]["ts"]
+
+            # Replace button with confirmation text
+            original_blocks = body["message"]["blocks"]
+            updated_blocks = [b for b in original_blocks if b.get("type") != "actions"]
+            updated_blocks.append(
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "Generating tickets from transcript...",
+                        }
+                    ],
+                }
+            )
+            await client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                blocks=updated_blocks,
+                text="Generating tickets from transcript...",
+            )
+
+            # Trigger the main flow with transcripts_only
+            await self._process_jira_sync(channel_id, user_id, client, transcripts_only_override=True)
+
     async def _process_jira_sync(
         self,
         channel_id: str,
         user_id: str,
         client: AsyncWebClient,
+        transcripts_only_override: bool = False,
     ) -> None:
         """Process a /jira-sync command."""
         logger.info("Processing /jira-sync for channel %s by user %s", channel_id, user_id)
@@ -449,7 +487,7 @@ class SlackHandler:
         # Fetch PM config from DynamoDB (if available)
         pm_config = None
         extra_tweaks = None
-        transcripts_only = False
+        transcripts_only = transcripts_only_override
 
         if self.dynamodb:
             pm_config = await self.dynamodb.get_pm_config(user_id)
@@ -458,9 +496,11 @@ class SlackHandler:
                     pm_config,
                     default_gdrive=self._get_default_gdrive_config(),
                 )
-                transcripts_only = (
-                    pm_config.get("flow_config", {}).get("transcripts_only", False)
-                )
+                # CLI override takes precedence, then DynamoDB flow_config
+                if not transcripts_only:
+                    transcripts_only = (
+                        pm_config.get("flow_config", {}).get("transcripts_only", False)
+                    )
                 logger.info(
                     "PM config loaded for %s: transcripts_only=%s, tweaks_components=%s",
                     user_id,
@@ -515,13 +555,9 @@ class SlackHandler:
             # session_id is passed separately via run_flow(), not inside the message
             # LangBuilder flow will handle enrichment (JIRA + GDrive) via its own tools
             input_data = {
-                "command": "/jira-sync",
+                "command": "transcripts_only" if transcripts_only else "/jira-sync",
                 "messages": slack_messages,
             }
-
-            # Pass transcripts_only flag so Smart Enrichment can adjust the prompt
-            if transcripts_only:
-                input_data["transcripts_only"] = True
 
             # DEBUG: Log exact input being sent to LangBuilder
             logger.info("=" * 60)

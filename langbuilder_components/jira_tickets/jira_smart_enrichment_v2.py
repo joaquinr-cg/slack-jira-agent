@@ -164,8 +164,8 @@ class JiraSmartEnrichmentComponent(Component):
         if not transcript or transcript.strip() == "":
             return "No meeting transcript available."
 
-        if len(transcript) > 5000:
-            transcript = transcript[:5000] + "\n\n[... transcript truncated for brevity ...]"
+        if len(transcript) > 10000:
+            transcript = transcript[:10000] + "\n\n[... transcript truncated for brevity ...]"
 
         return f"```\n{transcript}\n```"
 
@@ -184,17 +184,29 @@ class JiraSmartEnrichmentComponent(Component):
         except (json.JSONDecodeError, TypeError):
             return f"```\n{content}\n```"
 
-    def _build_analysis_prompt(self, parsed_input: dict) -> str:
-        """Build the enriched prompt for Analysis Mode (/jira-sync)."""
+    def _build_analysis_prompt(self, parsed_input: dict, transcripts_only: bool = False) -> str:
+        """Build the enriched prompt for Analysis Mode (/jira-sync or transcripts_only)."""
         transcript_text = self._extract_text(self.gdrive_transcript)
         jira_state_text = self._extract_text(self.jira_state)
         project_key = self.jira_project_key or "LAN"
+
+        if transcripts_only:
+            mode_description = (
+                "You are in **ANALYSIS MODE (Transcripts Only)**. Your task is to analyze "
+                "the meeting transcript and current JIRA state below, then generate structured "
+                "JSON proposals for JIRA updates. There are no Slack messages in this mode."
+            )
+        else:
+            mode_description = (
+                "You are in **ANALYSIS MODE**. Your task is to analyze the information below "
+                "and generate structured JSON proposals for JIRA updates."
+            )
 
         prompt = f"""# JIRA Review Analysis Request
 
 ## Mode: ANALYSIS
 
-You are in **ANALYSIS MODE**. Your task is to analyze the information below and generate structured JSON proposals for JIRA updates.
+{mode_description}
 
 **CRITICAL JSON RULES - READ CAREFULLY:**
 1. Your ENTIRE response must be valid, parseable JSON
@@ -207,14 +219,19 @@ You are in **ANALYSIS MODE**. Your task is to analyze the information below and 
 ---
 
 ## Data Sources
+"""
 
+        if not transcripts_only:
+            prompt += f"""
 ### 1. Slack Messages (Marked for JIRA Review)
 {self._format_slack_messages(parsed_input)}
+"""
 
-### 2. Latest Meeting Transcript
+        prompt += f"""
+### {"2" if not transcripts_only else "1"}. Latest Meeting Transcript
 {self._format_transcript(transcript_text)}
 
-### 3. Current JIRA State (Project: {project_key})
+### {"3" if not transcripts_only else "2"}. Current JIRA State (Project: {project_key})
 {self._format_jira_state(jira_state_text)}
 
 ---
@@ -435,7 +452,11 @@ comment: "Comment text here"
         if command == "/jira-sync":
             msg_count = len(parsed_input.get("messages", []))
             self.status = f"Analysis Mode - {msg_count} messages"
-            prompt = self._build_analysis_prompt(parsed_input)
+            prompt = self._build_analysis_prompt(parsed_input, transcripts_only=False)
+
+        elif command == "transcripts_only":
+            self.status = "Analysis Mode - Transcripts Only"
+            prompt = self._build_analysis_prompt(parsed_input, transcripts_only=True)
 
         elif command == "approval_decisions":
             decision_count = len(parsed_input.get("decisions", []))
