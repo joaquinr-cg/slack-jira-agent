@@ -17,7 +17,6 @@ from .db import (
     SessionStatus,
 )
 from .dynamodb_client import DynamoDBClient, build_tweaks_from_pm_config
-from .file_extractor import extract_text_from_slack_file
 from .langbuilder_client import (
     LangBuilderClient,
     LangBuilderError,
@@ -86,7 +85,6 @@ class SlackHandler:
             )
 
             # Fetch the message content
-            file_attachments_json = None
             try:
                 result = await client.conversations_history(
                     channel=channel_id,
@@ -97,24 +95,6 @@ class SlackHandler:
                 messages = result.get("messages", [])
                 message_text = messages[0].get("text", "") if messages else None
                 thread_ts = messages[0].get("thread_ts") if messages else None
-
-                # Extract text from file attachments if present
-                slack_files = messages[0].get("files", []) if messages else []
-                if slack_files:
-                    extracted_files = []
-                    for file_info in slack_files:
-                        extracted = await extract_text_from_slack_file(
-                            file_info, self.settings.slack_bot_token
-                        )
-                        if extracted:
-                            extracted_files.append(extracted)
-                    if extracted_files:
-                        file_attachments_json = json.dumps(extracted_files)
-                        logger.info(
-                            "Extracted text from %d file(s) on message %s",
-                            len(extracted_files),
-                            message_ts,
-                        )
 
             except Exception as e:
                 logger.error("Failed to fetch message content: %s", str(e))
@@ -129,7 +109,6 @@ class SlackHandler:
                 mark_type=MarkType.EMOJI,
                 thread_ts=thread_ts,
                 message_text=message_text,
-                file_attachments=file_attachments_json,
             )
 
             # Acknowledge with eyes emoji
@@ -717,26 +696,15 @@ class SlackHandler:
     ) -> list[dict]:
         """Fetch full content for marked messages.
 
-        Returns simplified format with text content and optional file attachments.
+        Returns simplified format with only the text content.
         LangBuilder doesn't need Slack metadata (channel_id, timestamps, etc.)
         """
         slack_messages = []
 
         for msg in marked_messages:
-            msg_dict: dict = {}
-
             # If we already have the text, use it
             if msg.message_text:
-                msg_dict["text"] = msg.message_text
-
-                # Include stored file attachments
-                if msg.file_attachments:
-                    try:
-                        msg_dict["file_attachments"] = json.loads(msg.file_attachments)
-                    except json.JSONDecodeError:
-                        logger.warning("Failed to parse file_attachments JSON for message %s", msg.message_ts)
-
-                slack_messages.append(msg_dict)
+                slack_messages.append({"text": msg.message_text})
                 continue
 
             # Fetch from Slack
@@ -751,20 +719,7 @@ class SlackHandler:
                     thread_text = "\n---\n".join(
                         [m.get("text", "") for m in messages]
                     )
-                    msg_dict["text"] = thread_text
-
-                    # Extract files from thread messages on the fly
-                    extracted_files = []
-                    for m in messages:
-                        for file_info in m.get("files", []):
-                            extracted = await extract_text_from_slack_file(
-                                file_info, self.settings.slack_bot_token
-                            )
-                            if extracted:
-                                extracted_files.append(extracted)
-                    if extracted_files:
-                        msg_dict["file_attachments"] = extracted_files
-
+                    slack_messages.append({"text": thread_text})
                 else:
                     # Single message
                     result = await client.conversations_history(
@@ -775,21 +730,7 @@ class SlackHandler:
                     )
                     messages = result.get("messages", [])
                     if messages:
-                        msg_dict["text"] = messages[0].get("text", "")
-
-                        # Extract files on the fly
-                        extracted_files = []
-                        for file_info in messages[0].get("files", []):
-                            extracted = await extract_text_from_slack_file(
-                                file_info, self.settings.slack_bot_token
-                            )
-                            if extracted:
-                                extracted_files.append(extracted)
-                        if extracted_files:
-                            msg_dict["file_attachments"] = extracted_files
-
-                if msg_dict:
-                    slack_messages.append(msg_dict)
+                        slack_messages.append({"text": messages[0].get("text", "")})
 
             except Exception as e:
                 logger.error(
@@ -880,6 +821,7 @@ class SlackHandler:
         if proposal.proposed_value:
             # Handle both string and dict values
             if isinstance(proposal.proposed_value, dict):
+                import json
                 proposed_str = json.dumps(proposal.proposed_value, indent=2)
             else:
                 proposed_str = str(proposal.proposed_value)
