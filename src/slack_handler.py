@@ -821,7 +821,6 @@ class SlackHandler:
         if proposal.proposed_value:
             # Handle both string and dict values
             if isinstance(proposal.proposed_value, dict):
-                import json
                 proposed_str = json.dumps(proposal.proposed_value, indent=2)
             else:
                 proposed_str = str(proposal.proposed_value)
