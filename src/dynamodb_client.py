@@ -42,7 +42,7 @@ class DynamoDBClient:
         Returns:
             PM configuration dict, or None if not found / disabled.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(
                 None,
@@ -77,7 +77,7 @@ class DynamoDBClient:
             slack_id: The Slack user ID
             transcript_info: Dict with file_id, file_name, modified_time, processed_at
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(
                 None,
@@ -108,7 +108,7 @@ class DynamoDBClient:
         Returns:
             List of PM configuration dicts where enabled=True.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(
                 None,
@@ -153,7 +153,7 @@ class DynamoDBClient:
         }
 
         serialized = self._serialize_item(item)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(
                 None,
@@ -190,7 +190,7 @@ class DynamoDBClient:
 
         update_expr = "SET " + ", ".join(set_parts)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(
                 None,
@@ -231,6 +231,7 @@ TRIGGER_CHAT_INPUT_ID = "ChatInput-jeWM0"
 def build_tweaks_from_pm_config(
     pm_config: dict[str, Any],
     default_gdrive: Optional[dict[str, Any]] = None,
+    shared_jira: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build LangBuilder tweaks payload from a PM configuration.
 
@@ -240,9 +241,13 @@ def build_tweaks_from_pm_config(
     GDrive uses shared service account credentials from default_gdrive,
     with PMs able to override folder_id and client_email in DynamoDB.
 
+    When shared_jira is provided and PM has no individual api_token,
+    the shared service account credentials are used instead.
+
     Args:
         pm_config: PM configuration dict from DynamoDB.
         default_gdrive: Shared GDrive service account config from Settings.
+        shared_jira: Shared JIRA service account config from Settings (optional).
 
     Returns:
         Tweaks dict keyed by component instance ID.
@@ -253,14 +258,35 @@ def build_tweaks_from_pm_config(
     tweaks: dict[str, Any] = {}
 
     # JIRA credentials for both reader and writer components
-    if jira:
+    # Multi-project support: read project_keys (list) with backward compat for project_key (string)
+    project_keys = jira.get("project_keys", [])
+    if not project_keys:
+        legacy_key = jira.get("project_key", "")
+        if legacy_key:
+            project_keys = [legacy_key]
+    project_key_value = ",".join(project_keys) if project_keys else ""
+
+    # Use shared JIRA service account if PM has no individual token
+    if shared_jira and not jira.get("api_token"):
+        jira_tweaks = {
+            "jira_url": shared_jira.get("jira_url", ""),
+            "email": shared_jira.get("email", ""),
+            "api_token": shared_jira.get("api_token", ""),
+            "auth_type": "basic",
+            "project_key": project_key_value,
+        }
+    elif jira:
         jira_tweaks = {
             "jira_url": jira.get("jira_url", ""),
             "email": jira.get("email", ""),
             "api_token": jira.get("api_token", ""),
             "auth_type": jira.get("auth_type", "basic"),
-            "project_key": jira.get("project_key", ""),
+            "project_key": project_key_value,
         }
+    else:
+        jira_tweaks = {}
+
+    if jira_tweaks:
         tweaks[COMPONENT_ID_JIRA_READER_WRITER] = jira_tweaks
         tweaks[COMPONENT_ID_JIRA_STATE_FETCHER] = jira_tweaks.copy()
 

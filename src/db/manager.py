@@ -2,13 +2,15 @@
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import logging
 
 import aiosqlite
 
 from .models import (
+    AuditEntry,
+    AuditEventType,
     Session,
     SessionStatus,
     MarkedMessage,
@@ -104,7 +106,70 @@ class DatabaseManager:
                 )
             """)
 
+            # Migrations: add new columns to existing tables
+            for migration in [
+                "ALTER TABLE sessions ADD COLUMN summary_message_ts TEXT",
+                "ALTER TABLE proposals ADD COLUMN original_proposed_value TEXT",
+                "ALTER TABLE proposals ADD COLUMN edited_by TEXT",
+            ]:
+                try:
+                    await db.execute(migration)
+                except Exception:
+                    pass  # Column already exists
+
+            # Rejection patterns table (for learning from rejections)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS rejection_patterns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_uuid TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL,
+                    change_type TEXT NOT NULL,
+                    field_name TEXT,
+                    confidence TEXT,
+                    source_type TEXT,
+                    rejection_reason TEXT,
+                    rejected_by TEXT NOT NULL,
+                    rejected_at TEXT NOT NULL
+                )
+            """)
+
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rejection_patterns_type
+                ON rejection_patterns(change_type)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rejection_patterns_field
+                ON rejection_patterns(field_name)
+            """)
+
+            # Audit log table (immutable: INSERT only)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    user_id TEXT,
+                    session_uuid TEXT,
+                    proposal_id TEXT,
+                    before_snapshot TEXT,
+                    after_snapshot TEXT,
+                    metadata TEXT
+                )
+            """)
+
             # Create indexes
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_session
+                ON audit_log(session_uuid)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_event
+                ON audit_log(event_type)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
+                ON audit_log(timestamp)
+            """)
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_marked_messages_channel
                 ON marked_messages(channel_id)
@@ -137,7 +202,7 @@ class DatabaseManager:
             uuid=str(uuid.uuid4()),
             channel_id=channel_id,
             triggered_by=triggered_by,
-            triggered_at=datetime.utcnow(),
+            triggered_at=datetime.now(timezone.utc),
             status=SessionStatus.PENDING,
         )
 
@@ -187,7 +252,7 @@ class DatabaseManager:
                     SET status = ?, completed_at = ?, error_message = ?
                     WHERE uuid = ?
                     """,
-                    (status.value, datetime.utcnow().isoformat(), error_message, session_uuid),
+                    (status.value, datetime.now(timezone.utc).isoformat(), error_message, session_uuid),
                 )
             else:
                 await db.execute(
@@ -224,7 +289,69 @@ class DatabaseManager:
             total_proposals=row["total_proposals"] or 0,
             approved_count=row["approved_count"] or 0,
             rejected_count=row["rejected_count"] or 0,
+            summary_message_ts=row["summary_message_ts"] if "summary_message_ts" in row.keys() else None,
         )
+
+    async def update_session_summary_ts(self, session_uuid: str, ts: str) -> None:
+        """Store the Slack message_ts of the bulk summary message."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE sessions SET summary_message_ts = ? WHERE uuid = ?",
+                (ts, session_uuid),
+            )
+            await db.commit()
+
+    async def get_session_summary_ts(self, session_uuid: str) -> Optional[str]:
+        """Get the summary message ts for a session."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT summary_message_ts FROM sessions WHERE uuid = ?",
+                (session_uuid,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+
+    async def bulk_update_pending_proposals(
+        self,
+        session_uuid: str,
+        status: ProposalStatus,
+        reviewed_by: str,
+    ) -> list[Proposal]:
+        """Update all PENDING proposals in a session to the given status.
+
+        Returns the list of proposals that were actually updated.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # First, fetch all pending proposals
+            async with db.execute(
+                "SELECT * FROM proposals WHERE session_uuid = ? AND status = ?",
+                (session_uuid, ProposalStatus.PENDING.value),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                proposals = [self._row_to_proposal(row) for row in rows]
+
+            if not proposals:
+                return []
+
+            # Update them all in one transaction
+            await db.execute(
+                """
+                UPDATE proposals
+                SET status = ?, reviewed_by = ?, reviewed_at = ?
+                WHERE session_uuid = ? AND status = ?
+                """,
+                (status.value, reviewed_by, now, session_uuid, ProposalStatus.PENDING.value),
+            )
+            await db.commit()
+
+        logger.info(
+            "Bulk updated %d proposals to %s in session %s",
+            len(proposals), status.value, session_uuid,
+        )
+        return proposals
 
     # ==========================================
     # MARKED MESSAGE OPERATIONS
@@ -246,7 +373,7 @@ class DatabaseManager:
             thread_ts=thread_ts,
             message_text=message_text,
             marked_by=marked_by,
-            marked_at=datetime.utcnow(),
+            marked_at=datetime.now(timezone.utc),
             mark_type=mark_type,
         )
 
@@ -471,7 +598,7 @@ class DatabaseManager:
                 (
                     status.value,
                     reviewed_by,
-                    datetime.utcnow().isoformat() if reviewed_by else None,
+                    datetime.now(timezone.utc).isoformat() if reviewed_by else None,
                     session_uuid,
                     proposal_id,
                 ),
@@ -484,6 +611,52 @@ class DatabaseManager:
             status.value,
             reviewed_by,
         )
+
+    async def update_proposal_value(
+        self,
+        session_uuid: str,
+        proposal_id: str,
+        new_value: str,
+        edited_by: str,
+    ) -> Optional[Proposal]:
+        """Update proposed_value (storing original), then mark as APPROVED.
+
+        Returns the updated proposal.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # Get current proposal to preserve original value
+            async with db.execute(
+                "SELECT * FROM proposals WHERE session_uuid = ? AND proposal_id = ?",
+                (session_uuid, proposal_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                current = self._row_to_proposal(row)
+
+            # Store original only if not already stored (first edit)
+            original = current.original_proposed_value or current.proposed_value
+
+            await db.execute(
+                """
+                UPDATE proposals
+                SET proposed_value = ?, original_proposed_value = ?,
+                    edited_by = ?, status = ?, reviewed_by = ?, reviewed_at = ?
+                WHERE session_uuid = ? AND proposal_id = ?
+                """,
+                (
+                    new_value, self._serialize_value(original),
+                    edited_by, ProposalStatus.APPROVED.value, edited_by, now,
+                    session_uuid, proposal_id,
+                ),
+            )
+            await db.commit()
+
+        logger.info("Proposal %s edited and approved by %s", proposal_id, edited_by)
+        return await self.get_proposal_by_id(session_uuid, proposal_id)
 
     async def update_proposal_slack_ts(
         self, session_uuid: str, proposal_id: str, slack_message_ts: str
@@ -517,7 +690,7 @@ class DatabaseManager:
                 """,
                 (
                     status.value,
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                     error,
                     session_uuid,
                     proposal_id,
@@ -553,6 +726,7 @@ class DatabaseManager:
 
     def _row_to_proposal(self, row: aiosqlite.Row) -> Proposal:
         """Convert database row to Proposal object."""
+        keys = row.keys()
         return Proposal(
             id=row["id"],
             session_uuid=row["session_uuid"],
@@ -566,12 +740,158 @@ class DatabaseManager:
             source=row["source"],
             source_excerpt=row["source_excerpt"],
             confidence=row["confidence"],
+            original_proposed_value=row["original_proposed_value"] if "original_proposed_value" in keys else None,
+            edited_by=row["edited_by"] if "edited_by" in keys else None,
             status=ProposalStatus(row["status"]),
             reviewed_by=row["reviewed_by"],
             reviewed_at=datetime.fromisoformat(row["reviewed_at"]) if row["reviewed_at"] else None,
             executed_at=datetime.fromisoformat(row["executed_at"]) if row["executed_at"] else None,
             execution_error=row["execution_error"],
             slack_message_ts=row["slack_message_ts"],
+        )
+
+    # ==========================================
+    # REJECTION PATTERN OPERATIONS
+    # ==========================================
+
+    async def record_rejection(
+        self,
+        session_uuid: str,
+        proposal_id: str,
+        change_type: str,
+        rejected_by: str,
+        field_name: Optional[str] = None,
+        confidence: Optional[str] = None,
+        source_type: Optional[str] = None,
+        rejection_reason: Optional[str] = None,
+    ) -> None:
+        """Record a rejection pattern entry."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO rejection_patterns
+                (session_uuid, proposal_id, change_type, field_name, confidence,
+                 source_type, rejection_reason, rejected_by, rejected_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_uuid, proposal_id, change_type, field_name,
+                    confidence, source_type, rejection_reason, rejected_by,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            await db.commit()
+
+    async def get_rejection_summary(self, min_count: int = 3) -> list[dict]:
+        """Aggregate rejection patterns for feeding back to LLM.
+
+        Returns patterns that have occurred at least min_count times.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    change_type,
+                    field_name,
+                    confidence,
+                    COUNT(*) as total_rejections,
+                    GROUP_CONCAT(DISTINCT rejection_reason) as sample_reasons
+                FROM rejection_patterns
+                GROUP BY change_type, field_name, confidence
+                HAVING COUNT(*) >= ?
+                ORDER BY total_rejections DESC
+                LIMIT 20
+                """,
+                (min_count,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                results = []
+                for row in rows:
+                    reasons = row["sample_reasons"]
+                    results.append({
+                        "change_type": row["change_type"],
+                        "field_name": row["field_name"],
+                        "confidence": row["confidence"],
+                        "total_rejections": row["total_rejections"],
+                        "sample_reasons": [r for r in (reasons or "").split(",") if r][:3],
+                    })
+                return results
+
+    # ==========================================
+    # AUDIT LOG OPERATIONS (immutable: INSERT + SELECT only)
+    # ==========================================
+
+    async def append_audit_log(self, entry: AuditEntry) -> None:
+        """Append an entry to the audit log. INSERT-only, never updates or deletes."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT INTO audit_log
+                    (timestamp, event_type, user_id, session_uuid, proposal_id,
+                     before_snapshot, after_snapshot, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry.timestamp.isoformat(),
+                        entry.event_type.value,
+                        entry.user_id,
+                        entry.session_uuid,
+                        entry.proposal_id,
+                        json.dumps(entry.before_snapshot) if entry.before_snapshot else None,
+                        json.dumps(entry.after_snapshot) if entry.after_snapshot else None,
+                        json.dumps(entry.metadata) if entry.metadata else None,
+                    ),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.error("Failed to write audit log: %s", e)
+
+    async def get_audit_log(
+        self,
+        session_uuid: Optional[str] = None,
+        event_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[AuditEntry]:
+        """Query audit log with optional filters."""
+        conditions = []
+        params: list = []
+
+        if session_uuid:
+            conditions.append("session_uuid = ?")
+            params.append(session_uuid)
+        if event_type:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+        if user_id:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+
+        where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = f"SELECT * FROM audit_log{where_clause} ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [self._row_to_audit_entry(row) for row in rows]
+
+    def _row_to_audit_entry(self, row: aiosqlite.Row) -> AuditEntry:
+        """Convert database row to AuditEntry object."""
+        return AuditEntry(
+            id=row["id"],
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            event_type=AuditEventType(row["event_type"]),
+            user_id=row["user_id"],
+            session_uuid=row["session_uuid"],
+            proposal_id=row["proposal_id"],
+            before_snapshot=json.loads(row["before_snapshot"]) if row["before_snapshot"] else None,
+            after_snapshot=json.loads(row["after_snapshot"]) if row["after_snapshot"] else None,
+            metadata=json.loads(row["metadata"]) if row["metadata"] else None,
         )
 
     # ==========================================

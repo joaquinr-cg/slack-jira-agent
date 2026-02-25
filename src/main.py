@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import signal
 import sys
 from typing import Optional
 
@@ -10,6 +11,7 @@ from .db import DatabaseManager
 from .dynamodb_client import DynamoDBClient
 from .langbuilder_client import LangBuilderClient
 from .slack_handler import SlackHandler
+from .sync_scheduler import SyncScheduler
 from .transcript_scheduler import TranscriptScheduler
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 _db_manager: Optional[DatabaseManager] = None
 _slack_handler: Optional[SlackHandler] = None
 _scheduler: Optional[TranscriptScheduler] = None
+_sync_scheduler: Optional[SyncScheduler] = None
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -40,6 +43,8 @@ async def shutdown() -> None:
     logger.info("Shutting down...")
     if _scheduler:
         await _scheduler.stop()
+    if _sync_scheduler:
+        await _sync_scheduler.stop()
     logger.info("Shutdown complete")
 
 
@@ -104,6 +109,16 @@ async def main() -> None:
     _slack_handler.set_scheduler(_scheduler)
     _scheduler.start()
 
+    # Start recurring sync scheduler
+    _sync_scheduler = SyncScheduler(
+        settings=settings,
+        db_manager=_db_manager,
+        langbuilder_client=langbuilder_client,
+        dynamodb_client=dynamodb_client,
+        slack_handler=_slack_handler,
+    )
+    _sync_scheduler.start()
+
     # Log configuration summary
     logger.info("=" * 50)
     logger.info("JIRA Slack Agent Configuration")
@@ -120,6 +135,11 @@ async def main() -> None:
     # Get initial stats
     stats = await _db_manager.get_stats()
     logger.info("Database stats: %s", stats)
+
+    # Register signal handlers for graceful shutdown (Docker sends SIGTERM)
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
 
     try:
         # Start Slack handler (blocks until shutdown)

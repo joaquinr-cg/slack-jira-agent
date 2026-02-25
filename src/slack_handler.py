@@ -9,6 +9,8 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from .config import Settings
 from .db import (
+    AuditEntry,
+    AuditEventType,
     DatabaseManager,
     MarkedMessage,
     MarkType,
@@ -50,12 +52,12 @@ class SlackHandler:
         self.app = AsyncApp(token=settings.slack_bot_token)
         self._bot_user_id: Optional[str] = None
 
+        # Register handlers
+        self._register_handlers()
+
     def set_scheduler(self, scheduler) -> None:
         """Set the transcript scheduler for manual trigger support."""
         self._scheduler = scheduler
-
-        # Register handlers
-        self._register_handlers()
 
     def _register_handlers(self) -> None:
         """Register all Slack event handlers."""
@@ -186,6 +188,12 @@ class SlackHandler:
             # Parse --transcripts-only flag from command text
             transcripts_only_override = "transcripts-only" in command_text or "transcripts_only" in command_text
 
+            # Parse --project=KEY flag for project filtering
+            project_filter = None
+            for part in command_text.split():
+                if part.startswith("--project="):
+                    project_filter = part.split("=", 1)[1].strip().upper()
+
             # Check for deduplication
             sync_key = f"sync:{channel_id}:{user_id}"
             if sync_key in self._processing:
@@ -199,7 +207,10 @@ class SlackHandler:
             self._processing.add(sync_key)
 
             try:
-                await self._process_jira_sync(channel_id, user_id, client, transcripts_only_override)
+                await self._process_jira_sync(
+                    channel_id, user_id, client, transcripts_only_override,
+                    project_filter=project_filter,
+                )
             finally:
                 self._processing.discard(sync_key)
 
@@ -265,6 +276,8 @@ class SlackHandler:
                 await self._admin_enable_pm(client, channel_id, user_id, target_id)
             elif text == "check-transcripts":
                 await self._manual_check_transcripts(client, channel_id, user_id)
+            elif text == "schedule":
+                await self._open_schedule_modal(client, trigger_id, user_id)
             elif text == "admin stats":
                 if not self.settings.is_admin(user_id):
                     await client.chat_postEphemeral(
@@ -273,6 +286,15 @@ class SlackHandler:
                     )
                     return
                 await self._admin_stats(client, channel_id, user_id)
+            elif text.startswith("admin audit"):
+                if not self.settings.is_admin(user_id):
+                    await client.chat_postEphemeral(
+                        channel=channel_id, user=user_id,
+                        text="You don't have admin permissions.",
+                    )
+                    return
+                audit_session = text.replace("admin audit", "").strip()
+                await self._admin_audit_log(client, channel_id, user_id, audit_session or None)
             else:
                 await client.chat_postEphemeral(
                     channel=channel_id,
@@ -284,10 +306,12 @@ class SlackHandler:
                         "`/jira-agent update jira` - Update JIRA credentials\n"
                         "`/jira-agent update gdrive` - Update Google Drive settings\n"
                         "`/jira-agent check-transcripts` - Manually check for new transcripts\n"
+                        "`/jira-agent schedule` - Configure recurring sync schedule\n"
                         "`/jira-agent admin list` - List all PMs (admin)\n"
                         "`/jira-agent admin disable <slack_id>` - Disable a PM (admin)\n"
                         "`/jira-agent admin enable <slack_id>` - Enable a PM (admin)\n"
-                        "`/jira-agent admin stats` - Usage statistics (admin)"
+                        "`/jira-agent admin stats` - Usage statistics (admin)\n"
+                        "`/jira-agent admin audit [session_uuid]` - View audit log (admin)"
                     ),
                 )
 
@@ -303,19 +327,38 @@ class SlackHandler:
             values = view["state"]["values"]
 
             try:
-                # Resolve secrets: use new value if provided, else keep existing
-                existing_secrets = {}
+                # Resolve secrets: use new value if provided, else keep existing from DynamoDB
+                is_update = False
                 metadata = view.get("private_metadata", "")
                 if metadata:
                     try:
-                        existing_secrets = json.loads(metadata)
+                        is_update = json.loads(metadata).get("is_update", False)
                     except json.JSONDecodeError:
                         pass
 
-                jira_token = (
-                    values["jira_token_block"]["jira_token_input"]["value"]
-                    or existing_secrets.get("existing_jira_token", "")
-                )
+                existing_secrets = {}
+                if is_update:
+                    existing_config = await self.dynamodb.get_pm_config(user_id)
+                    if existing_config:
+                        existing_secrets = {
+                            "existing_jira_token": existing_config.get("jira_config", {}).get("api_token", ""),
+                            "existing_gdrive_key": existing_config.get("gdrive_config", {}).get("private_key", ""),
+                        }
+
+                # Handle JIRA token (may be absent when using shared service account)
+                shared_jira_configured = bool(self.settings.jira_shared_api_token)
+                if shared_jira_configured:
+                    jira_token = ""
+                    jira_url = ""
+                    jira_email = ""
+                else:
+                    jira_token = (
+                        values["jira_token_block"]["jira_token_input"]["value"]
+                        or existing_secrets.get("existing_jira_token", "")
+                    )
+                    jira_url = values["jira_url_block"]["jira_url_input"]["value"]
+                    jira_email = values["jira_email_block"]["jira_email_input"]["value"]
+
                 gdrive_key = (
                     values["gdrive_key_block"]["gdrive_key_input"]["value"]
                     or existing_secrets.get("existing_gdrive_key", "")
@@ -326,10 +369,10 @@ class SlackHandler:
                     "name": values["name_block"]["name_input"]["value"],
                     "email": values["email_block"]["email_input"]["value"],
                     "jira_config": {
-                        "jira_url": values["jira_url_block"]["jira_url_input"]["value"],
-                        "email": values["jira_email_block"]["jira_email_input"]["value"],
+                        "jira_url": jira_url,
+                        "email": jira_email,
                         "api_token": jira_token,
-                        "project_key": values["jira_project_block"]["jira_project_input"]["value"],
+                        "project_keys": [k.strip() for k in values["jira_project_block"]["jira_project_input"]["value"].split(",") if k.strip()],
                         "auth_type": "basic",
                     },
                     "gdrive_config": {
@@ -378,7 +421,7 @@ class SlackHandler:
                     "jira_url": values["jira_url_block"]["jira_url_input"]["value"],
                     "email": values["jira_email_block"]["jira_email_input"]["value"],
                     "api_token": new_token if new_token else current_jira.get("api_token", ""),
-                    "project_key": values["jira_project_block"]["jira_project_input"]["value"],
+                    "project_keys": [k.strip() for k in values["jira_project_block"]["jira_project_input"]["value"].split(",") if k.strip()],
                     "auth_type": current_jira.get("auth_type", "basic"),
                 }
                 await self.dynamodb.update_pm(user_id, {"jira_config": jira_config})
@@ -429,6 +472,24 @@ class SlackHandler:
                     text=f"Failed to update GDrive config: {str(e)}",
                 )
 
+        @self.app.view("edit_proposal_modal")
+        async def handle_edit_submission(ack, body: dict, client: AsyncWebClient, view: dict) -> None:
+            """Handle edit proposal modal submission."""
+            await ack()
+            await self._handle_edit_submission(body, client, view)
+
+        @self.app.view("rejection_reason_modal")
+        async def handle_rejection_reason(ack, body: dict, client: AsyncWebClient, view: dict) -> None:
+            """Handle rejection reason modal submission."""
+            await ack()
+            await self._handle_rejection_reason_submission(body, client, view)
+
+        @self.app.view("schedule_config_modal")
+        async def handle_schedule_submission(ack, body: dict, client: AsyncWebClient, view: dict) -> None:
+            """Handle schedule config modal submission."""
+            await ack()
+            await self._handle_schedule_submission(body, client, view)
+
         # ==========================================
         # INTERACTIVE COMPONENT HANDLERS (Buttons)
         # ==========================================
@@ -443,11 +504,9 @@ class SlackHandler:
 
         @self.app.action("reject_proposal")
         async def handle_reject(ack, body: dict, client: AsyncWebClient) -> None:
-            """Handle reject button click."""
+            """Handle reject button click - opens reason modal."""
             await ack()
-            await self._handle_proposal_response(
-                body, client, ProposalStatus.REJECTED
-            )
+            await self._open_rejection_reason_modal(body, client)
 
         @self.app.action("generate_from_transcript")
         async def handle_generate_from_transcript(ack, body: dict, client: AsyncWebClient) -> None:
@@ -482,12 +541,31 @@ class SlackHandler:
             # Trigger the main flow with transcripts_only
             await self._process_jira_sync(channel_id, user_id, client, transcripts_only_override=True)
 
+        @self.app.action("edit_proposal")
+        async def handle_edit_proposal(ack, body: dict, client: AsyncWebClient) -> None:
+            """Handle Edit & Approve button click - opens edit modal."""
+            await ack()
+            await self._open_edit_modal(body, client)
+
+        @self.app.action("bulk_approve")
+        async def handle_bulk_approve(ack, body: dict, client: AsyncWebClient) -> None:
+            """Handle Approve All button click."""
+            await ack()
+            await self._handle_bulk_action(body, client, ProposalStatus.APPROVED)
+
+        @self.app.action("bulk_reject")
+        async def handle_bulk_reject(ack, body: dict, client: AsyncWebClient) -> None:
+            """Handle Reject All button click."""
+            await ack()
+            await self._handle_bulk_action(body, client, ProposalStatus.REJECTED)
+
     async def _process_jira_sync(
         self,
         channel_id: str,
         user_id: str,
         client: AsyncWebClient,
         transcripts_only_override: bool = False,
+        project_filter: Optional[str] = None,
     ) -> None:
         """Process a /jira-sync command."""
         logger.info("Processing /jira-sync for channel %s by user %s", channel_id, user_id)
@@ -503,6 +581,7 @@ class SlackHandler:
                 extra_tweaks = build_tweaks_from_pm_config(
                     pm_config,
                     default_gdrive=self._get_default_gdrive_config(),
+                    shared_jira=self._get_shared_jira_config(),
                 )
                 # CLI override takes precedence, then DynamoDB flow_config
                 if not transcripts_only:
@@ -535,6 +614,14 @@ class SlackHandler:
         # Create session
         session = await self.db.create_session(channel_id, user_id)
 
+        # Audit: sync triggered
+        await self.db.append_audit_log(AuditEntry(
+            event_type=AuditEventType.SYNC_TRIGGERED,
+            user_id=user_id,
+            session_uuid=session.uuid,
+            metadata={"channel_id": channel_id, "transcripts_only": transcripts_only},
+        ))
+
         # Send processing message
         if transcripts_only:
             processing_text = "Processing transcript-only JIRA sync..."
@@ -566,6 +653,18 @@ class SlackHandler:
                 "command": "transcripts_only" if transcripts_only else "/jira-sync",
                 "messages": slack_messages,
             }
+
+            # Add project filter if specified
+            if project_filter:
+                input_data["project_filter"] = project_filter
+
+            # Feed rejection patterns to improve future proposal quality
+            try:
+                rejection_summary = await self.db.get_rejection_summary()
+                if rejection_summary:
+                    input_data["rejection_patterns"] = rejection_summary
+            except Exception as e:
+                logger.warning("Failed to fetch rejection patterns: %s", e)
 
             # DEBUG: Log exact input being sent to LangBuilder
             logger.info("=" * 60)
@@ -609,6 +708,12 @@ class SlackHandler:
                 await self.db.update_session_status(
                     session.uuid, SessionStatus.COMPLETED
                 )
+                await self.db.append_audit_log(AuditEntry(
+                    event_type=AuditEventType.SYNC_COMPLETED,
+                    user_id=user_id,
+                    session_uuid=session.uuid,
+                    metadata={"proposals_count": 0},
+                ))
                 return
 
             # Create proposals in database
@@ -630,6 +735,22 @@ class SlackHandler:
                 proposals.append(proposal)
 
             proposals = await self.db.create_proposals_batch(proposals)
+
+            # Audit: proposals created
+            for p in proposals:
+                await self.db.append_audit_log(AuditEntry(
+                    event_type=AuditEventType.PROPOSAL_CREATED,
+                    user_id=user_id,
+                    session_uuid=session.uuid,
+                    proposal_id=p.proposal_id,
+                    after_snapshot={
+                        "ticket_key": p.ticket_key,
+                        "change_type": p.change_type,
+                        "field_name": p.field_name,
+                        "proposed_value": p.proposed_value,
+                        "confidence": p.confidence,
+                    },
+                ))
 
             # Update session
             await self.db.update_session_counts(
@@ -658,6 +779,16 @@ class SlackHandler:
                         session.uuid, proposal.proposal_id, message["ts"]
                     )
 
+            # Post bulk actions summary message
+            if len(proposals) > 1:
+                summary_msg = await self._send_bulk_actions_message(
+                    client, channel_id, session.uuid, len(proposals)
+                )
+                if summary_msg:
+                    await self.db.update_session_summary_ts(
+                        session.uuid, summary_msg["ts"]
+                    )
+
         except LangBuilderTimeoutError:
             await client.chat_update(
                 channel=channel_id,
@@ -667,6 +798,12 @@ class SlackHandler:
             await self.db.update_session_status(
                 session.uuid, SessionStatus.FAILED, "Timeout"
             )
+            await self.db.append_audit_log(AuditEntry(
+                event_type=AuditEventType.SYNC_FAILED,
+                user_id=user_id,
+                session_uuid=session.uuid,
+                metadata={"error": "Timeout"},
+            ))
 
         except LangBuilderError as e:
             await client.chat_update(
@@ -677,6 +814,12 @@ class SlackHandler:
             await self.db.update_session_status(
                 session.uuid, SessionStatus.FAILED, str(e)
             )
+            await self.db.append_audit_log(AuditEntry(
+                event_type=AuditEventType.SYNC_FAILED,
+                user_id=user_id,
+                session_uuid=session.uuid,
+                metadata={"error": str(e)},
+            ))
 
         except Exception as e:
             logger.exception("Unexpected error in jira-sync")
@@ -688,6 +831,12 @@ class SlackHandler:
             await self.db.update_session_status(
                 session.uuid, SessionStatus.FAILED, str(e)
             )
+            await self.db.append_audit_log(AuditEntry(
+                event_type=AuditEventType.SYNC_FAILED,
+                user_id=user_id,
+                session_uuid=session.uuid,
+                metadata={"error": str(e)},
+            ))
 
     async def _fetch_message_contents(
         self,
@@ -852,6 +1001,10 @@ class SlackHandler:
             )
 
         # Action buttons
+        button_value = json.dumps({
+            "session_uuid": session_uuid,
+            "proposal_id": proposal.proposal_id,
+        })
         blocks.append(
             {
                 "type": "actions",
@@ -861,12 +1014,13 @@ class SlackHandler:
                         "text": {"type": "plain_text", "text": "Approve", "emoji": True},
                         "style": "primary",
                         "action_id": "approve_proposal",
-                        "value": json.dumps(
-                            {
-                                "session_uuid": session_uuid,
-                                "proposal_id": proposal.proposal_id,
-                            }
-                        ),
+                        "value": button_value,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Edit & Approve", "emoji": True},
+                        "action_id": "edit_proposal",
+                        "value": button_value,
                     },
                     {
                         "type": "button",
@@ -895,6 +1049,437 @@ class SlackHandler:
             logger.error("Failed to send proposal message: %s", str(e))
             return None
 
+    async def _send_bulk_actions_message(
+        self,
+        client: AsyncWebClient,
+        channel_id: str,
+        session_uuid: str,
+        total_proposals: int,
+    ) -> Optional[dict]:
+        """Send a summary message with Approve All / Reject All buttons."""
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Session Summary:* {total_proposals} proposals above.\n"
+                    "Use the buttons below to approve or reject all remaining proposals at once.",
+                },
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Approve All Remaining", "emoji": True},
+                        "style": "primary",
+                        "action_id": "bulk_approve",
+                        "value": json.dumps({"session_uuid": session_uuid}),
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "Confirm Bulk Approve"},
+                            "text": {"type": "mrkdwn", "text": "Approve all pending proposals in this session?"},
+                            "confirm": {"type": "plain_text", "text": "Yes, Approve All"},
+                            "deny": {"type": "plain_text", "text": "Cancel"},
+                        },
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Reject All Remaining", "emoji": True},
+                        "style": "danger",
+                        "action_id": "bulk_reject",
+                        "value": json.dumps({"session_uuid": session_uuid}),
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "Confirm Bulk Reject"},
+                            "text": {"type": "mrkdwn", "text": "Reject all pending proposals in this session?"},
+                            "confirm": {"type": "plain_text", "text": "Yes, Reject All"},
+                            "deny": {"type": "plain_text", "text": "Cancel"},
+                        },
+                    },
+                ],
+            },
+        ]
+
+        try:
+            return await client.chat_postMessage(
+                channel=channel_id,
+                blocks=blocks,
+                text=f"Bulk actions for {total_proposals} proposals",
+            )
+        except Exception as e:
+            logger.error("Failed to send bulk actions message: %s", str(e))
+            return None
+
+    async def _handle_bulk_action(
+        self, body: dict, client: AsyncWebClient, status: ProposalStatus
+    ) -> None:
+        """Handle Approve All / Reject All button click."""
+        import asyncio
+
+        action = body["actions"][0]
+        value = json.loads(action["value"])
+        session_uuid = value["session_uuid"]
+        user_id = body["user"]["id"]
+        channel_id = body["channel"]["id"]
+        summary_ts = body["message"]["ts"]
+
+        # Update all PENDING proposals
+        updated_proposals = await self.db.bulk_update_pending_proposals(
+            session_uuid, status, user_id
+        )
+
+        if not updated_proposals:
+            # All proposals were already individually handled
+            await client.chat_update(
+                channel=channel_id,
+                ts=summary_ts,
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "All proposals were already individually reviewed.",
+                    },
+                }],
+                text="All proposals already reviewed",
+            )
+            return
+
+        # Update individual Slack messages for each affected proposal
+        status_emoji = (
+            self.settings.approved_emoji
+            if status == ProposalStatus.APPROVED
+            else self.settings.rejected_emoji
+        )
+        status_text = "Bulk Approved" if status == ProposalStatus.APPROVED else "Bulk Rejected"
+
+        for proposal in updated_proposals:
+            if proposal.slack_message_ts:
+                try:
+                    result = await client.conversations_history(
+                        channel=channel_id,
+                        latest=proposal.slack_message_ts,
+                        inclusive=True,
+                        limit=1,
+                    )
+                    if result["messages"]:
+                        original_blocks = result["messages"][0].get("blocks", [])
+                        updated_blocks = [b for b in original_blocks if b.get("type") != "actions"]
+                        updated_blocks.append({
+                            "type": "context",
+                            "elements": [{
+                                "type": "mrkdwn",
+                                "text": f":{status_emoji}: *{status_text}* by <@{user_id}>",
+                            }],
+                        })
+                        await client.chat_update(
+                            channel=channel_id,
+                            ts=proposal.slack_message_ts,
+                            blocks=updated_blocks,
+                            text=f"Proposal {status_text}",
+                        )
+                except Exception as e:
+                    logger.error(
+                        "Failed to update proposal message %s: %s",
+                        proposal.proposal_id, e,
+                    )
+                # Throttle to avoid Slack rate limits
+                await asyncio.sleep(0.3)
+
+        # Update summary message with final tally
+        all_proposals = await self.db.get_proposals_for_session(session_uuid)
+        approved = sum(1 for p in all_proposals if p.status == ProposalStatus.APPROVED)
+        rejected = sum(1 for p in all_proposals if p.status == ProposalStatus.REJECTED)
+
+        await client.chat_update(
+            channel=channel_id,
+            ts=summary_ts,
+            blocks=[{
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Session Complete:* {approved} approved, {rejected} rejected by <@{user_id}>",
+                },
+            }],
+            text=f"Session complete: {approved} approved, {rejected} rejected",
+        )
+
+        # Update session counts
+        await self.db.update_session_counts(session_uuid, len(all_proposals), approved, rejected)
+
+        # Audit log
+        audit_event = (
+            AuditEventType.BULK_APPROVED
+            if status == ProposalStatus.APPROVED
+            else AuditEventType.BULK_REJECTED
+        )
+        await self.db.append_audit_log(AuditEntry(
+            event_type=audit_event,
+            user_id=user_id,
+            session_uuid=session_uuid,
+            metadata={"affected_proposal_ids": [p.proposal_id for p in updated_proposals]},
+        ))
+
+        # Check if all responded and send to LLM
+        all_responded = await self.db.are_all_proposals_responded(session_uuid)
+        if all_responded:
+            await self._send_approval_decisions_to_llm(session_uuid, channel_id, client)
+
+    async def _open_rejection_reason_modal(self, body: dict, client: AsyncWebClient) -> None:
+        """Open modal to collect optional rejection reason."""
+        action = body["actions"][0]
+        value = json.loads(action["value"])
+
+        view = {
+            "type": "modal",
+            "callback_id": "rejection_reason_modal",
+            "title": {"type": "plain_text", "text": "Reject Proposal"},
+            "submit": {"type": "plain_text", "text": "Reject"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps({
+                "session_uuid": value["session_uuid"],
+                "proposal_id": value["proposal_id"],
+                "channel_id": body["channel"]["id"],
+                "message_ts": body["message"]["ts"],
+            }),
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "reason_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "reason_input",
+                        "multiline": True,
+                        "placeholder": {"type": "plain_text", "text": "Why are you rejecting this? (optional)"},
+                    },
+                    "label": {"type": "plain_text", "text": "Rejection Reason"},
+                    "optional": True,
+                },
+            ],
+        }
+
+        await client.views_open(trigger_id=body["trigger_id"], view=view)
+
+    async def _handle_rejection_reason_submission(
+        self, body: dict, client: AsyncWebClient, view: dict
+    ) -> None:
+        """Handle rejection reason modal submission — reject the proposal and record the pattern."""
+        user_id = body["user"]["id"]
+        metadata = json.loads(view["private_metadata"])
+        session_uuid = metadata["session_uuid"]
+        proposal_id = metadata["proposal_id"]
+        channel_id = metadata["channel_id"]
+        message_ts = metadata["message_ts"]
+
+        # Extract optional reason
+        reason_values = view["state"]["values"].get("reason_block", {})
+        reason = reason_values.get("reason_input", {}).get("value")
+
+        # Get proposal before rejection for pattern recording
+        proposal = await self.db.get_proposal_by_id(session_uuid, proposal_id)
+        if not proposal or proposal.status != ProposalStatus.PENDING:
+            return
+
+        # Update proposal status
+        await self.db.update_proposal_status(
+            session_uuid, proposal_id, ProposalStatus.REJECTED, user_id
+        )
+
+        # Record rejection pattern
+        await self.db.record_rejection(
+            session_uuid=session_uuid,
+            proposal_id=proposal_id,
+            change_type=proposal.change_type,
+            rejected_by=user_id,
+            field_name=proposal.field_name,
+            confidence=proposal.confidence,
+            source_type=proposal.source,
+            rejection_reason=reason,
+        )
+
+        # Audit log
+        await self.db.append_audit_log(AuditEntry(
+            event_type=AuditEventType.PROPOSAL_REJECTED,
+            user_id=user_id,
+            session_uuid=session_uuid,
+            proposal_id=proposal_id,
+            before_snapshot={"status": "pending", "proposed_value": proposal.proposed_value},
+            after_snapshot={"status": "rejected", "rejection_reason": reason},
+        ))
+
+        # Update Slack message (remove buttons, show "Rejected")
+        try:
+            result = await client.conversations_history(
+                channel=channel_id, latest=message_ts, inclusive=True, limit=1,
+            )
+            if result["messages"]:
+                original_blocks = result["messages"][0].get("blocks", [])
+                updated_blocks = [b for b in original_blocks if b.get("type") != "actions"]
+                reason_text = f"\n_Reason: {reason}_" if reason else ""
+                updated_blocks.append({
+                    "type": "context",
+                    "elements": [{
+                        "type": "mrkdwn",
+                        "text": f":{self.settings.rejected_emoji}: *Rejected* by <@{user_id}>{reason_text}",
+                    }],
+                })
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=message_ts,
+                    blocks=updated_blocks,
+                    text="Proposal Rejected",
+                )
+        except Exception as e:
+            logger.error("Failed to update rejected proposal message: %s", e)
+
+        # Check if all responded
+        all_responded = await self.db.are_all_proposals_responded(session_uuid)
+        if all_responded:
+            await self._update_summary_message_complete(session_uuid, channel_id, user_id, client)
+            await self._send_approval_decisions_to_llm(session_uuid, channel_id, client)
+
+    async def _open_edit_modal(self, body: dict, client: AsyncWebClient) -> None:
+        """Open modal to edit a proposal's proposed value before approving."""
+        action = body["actions"][0]
+        value = json.loads(action["value"])
+        session_uuid = value["session_uuid"]
+        proposal_id = value["proposal_id"]
+        trigger_id = body["trigger_id"]
+
+        proposal = await self.db.get_proposal_by_id(session_uuid, proposal_id)
+        if not proposal or proposal.status != ProposalStatus.PENDING:
+            return
+
+        # Format the proposed value for editing
+        if isinstance(proposal.proposed_value, dict):
+            edit_text = json.dumps(proposal.proposed_value, indent=2)
+        else:
+            edit_text = str(proposal.proposed_value or "")
+
+        # Slack plain_text_input initial_value limit is 3000 chars
+        truncated = len(edit_text) > 3000
+        if truncated:
+            edit_text = edit_text[:3000]
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Ticket:* {proposal.ticket_key}\n*Change:* {proposal.change_type}\n*Field:* {proposal.field_name or 'N/A'}",
+                },
+            },
+        ]
+
+        # Show current value as read-only context
+        if proposal.current_value:
+            current_display = str(proposal.current_value)[:500]
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Current value:*\n```{current_display}```",
+                },
+            })
+
+        blocks.append({"type": "divider"})
+
+        if truncated:
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "_Value was truncated to 3000 chars for editing._"}],
+            })
+
+        blocks.append({
+            "type": "input",
+            "block_id": "edited_value_block",
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "edited_value_input",
+                "multiline": True,
+                "initial_value": edit_text,
+            },
+            "label": {"type": "plain_text", "text": "Proposed Value (edit below)"},
+        })
+
+        view = {
+            "type": "modal",
+            "callback_id": "edit_proposal_modal",
+            "title": {"type": "plain_text", "text": "Edit Proposal"},
+            "submit": {"type": "plain_text", "text": "Save & Approve"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": json.dumps({
+                "session_uuid": session_uuid,
+                "proposal_id": proposal_id,
+                "channel_id": body["channel"]["id"],
+                "message_ts": body["message"]["ts"],
+            }),
+            "blocks": blocks,
+        }
+
+        await client.views_open(trigger_id=trigger_id, view=view)
+
+    async def _handle_edit_submission(
+        self, body: dict, client: AsyncWebClient, view: dict
+    ) -> None:
+        """Handle edit proposal modal submission — save edited value and approve."""
+        user_id = body["user"]["id"]
+        metadata = json.loads(view["private_metadata"])
+        session_uuid = metadata["session_uuid"]
+        proposal_id = metadata["proposal_id"]
+        channel_id = metadata["channel_id"]
+        message_ts = metadata["message_ts"]
+
+        new_value = view["state"]["values"]["edited_value_block"]["edited_value_input"]["value"]
+
+        # Get old proposal for audit before_snapshot
+        old_proposal = await self.db.get_proposal_by_id(session_uuid, proposal_id)
+        if not old_proposal or old_proposal.status != ProposalStatus.PENDING:
+            return
+
+        # Update DB (sets status to APPROVED, stores original)
+        await self.db.update_proposal_value(
+            session_uuid, proposal_id, new_value, user_id
+        )
+
+        # Audit log
+        await self.db.append_audit_log(AuditEntry(
+            event_type=AuditEventType.PROPOSAL_EDITED,
+            user_id=user_id,
+            session_uuid=session_uuid,
+            proposal_id=proposal_id,
+            before_snapshot={"proposed_value": old_proposal.proposed_value},
+            after_snapshot={"proposed_value": new_value},
+        ))
+
+        # Update Slack message (remove buttons, show "Edited & Approved")
+        try:
+            result = await client.conversations_history(
+                channel=channel_id, latest=message_ts, inclusive=True, limit=1,
+            )
+            if result["messages"]:
+                original_blocks = result["messages"][0].get("blocks", [])
+                updated_blocks = [b for b in original_blocks if b.get("type") != "actions"]
+                updated_blocks.append({
+                    "type": "context",
+                    "elements": [{
+                        "type": "mrkdwn",
+                        "text": f":pencil: *Edited & Approved* by <@{user_id}>",
+                    }],
+                })
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=message_ts,
+                    blocks=updated_blocks,
+                    text="Proposal Edited & Approved",
+                )
+        except Exception as e:
+            logger.error("Failed to update edited proposal message: %s", e)
+
+        # Check if all responded
+        all_responded = await self.db.are_all_proposals_responded(session_uuid)
+        if all_responded:
+            await self._update_summary_message_complete(session_uuid, channel_id, user_id, client)
+            await self._send_approval_decisions_to_llm(session_uuid, channel_id, client)
+
     async def _handle_proposal_response(
         self,
         body: dict,
@@ -917,10 +1502,31 @@ class SlackHandler:
             user_id,
         )
 
+        # Get proposal before update for audit snapshot
+        proposal_before = await self.db.get_proposal_by_id(session_uuid, proposal_id)
+
         # Update proposal status in DB
         await self.db.update_proposal_status(
             session_uuid, proposal_id, status, user_id
         )
+
+        # Audit: proposal approved/rejected
+        audit_event = (
+            AuditEventType.PROPOSAL_APPROVED
+            if status == ProposalStatus.APPROVED
+            else AuditEventType.PROPOSAL_REJECTED
+        )
+        await self.db.append_audit_log(AuditEntry(
+            event_type=audit_event,
+            user_id=user_id,
+            session_uuid=session_uuid,
+            proposal_id=proposal_id,
+            before_snapshot={
+                "status": proposal_before.status.value if proposal_before else "unknown",
+                "proposed_value": proposal_before.proposed_value if proposal_before else None,
+            },
+            after_snapshot={"status": status.value},
+        ))
 
         # Update the Slack message to show the decision (remove buttons)
         status_emoji = (
@@ -955,7 +1561,43 @@ class SlackHandler:
         all_responded = await self.db.are_all_proposals_responded(session_uuid)
 
         if all_responded:
+            # Update summary message to remove bulk buttons and show final tally
+            await self._update_summary_message_complete(session_uuid, channel_id, user_id, client)
             await self._send_approval_decisions_to_llm(session_uuid, channel_id, client)
+
+    async def _update_summary_message_complete(
+        self,
+        session_uuid: str,
+        channel_id: str,
+        user_id: str,
+        client: AsyncWebClient,
+    ) -> None:
+        """Update the bulk summary message to show final tally and remove buttons."""
+        summary_ts = await self.db.get_session_summary_ts(session_uuid)
+        if not summary_ts:
+            return
+
+        all_proposals = await self.db.get_proposals_for_session(session_uuid)
+        approved = sum(1 for p in all_proposals if p.status == ProposalStatus.APPROVED)
+        rejected = sum(1 for p in all_proposals if p.status == ProposalStatus.REJECTED)
+
+        try:
+            await client.chat_update(
+                channel=channel_id,
+                ts=summary_ts,
+                blocks=[{
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Session Complete:* {approved} approved, {rejected} rejected",
+                    },
+                }],
+                text=f"Session complete: {approved} approved, {rejected} rejected",
+            )
+        except Exception as e:
+            logger.error("Failed to update summary message: %s", e)
+
+        await self.db.update_session_counts(session_uuid, len(all_proposals), approved, rejected)
 
     async def _send_approval_decisions_to_llm(
         self,
@@ -979,6 +1621,7 @@ class SlackHandler:
                     extra_tweaks = build_tweaks_from_pm_config(
                         pm_config,
                         default_gdrive=self._get_default_gdrive_config(),
+                        shared_jira=self._get_shared_jira_config(),
                     )
 
         # Build the decision summary for the LLM
@@ -996,6 +1639,17 @@ class SlackHandler:
 
         approved_count = sum(1 for d in decisions if d["decision"] == "approved")
         rejected_count = sum(1 for d in decisions if d["decision"] == "rejected")
+
+        # Audit: decisions sent to LLM
+        await self.db.append_audit_log(AuditEntry(
+            event_type=AuditEventType.DECISIONS_SENT_TO_LLM,
+            session_uuid=session_uuid,
+            metadata={
+                "approved_count": approved_count,
+                "rejected_count": rejected_count,
+                "decisions": decisions,
+            },
+        ))
 
         # Send status message
         status_msg = await client.chat_postMessage(
@@ -1092,6 +1746,19 @@ class SlackHandler:
             "file_filter": self.settings.gdrive_file_filter,
         }
 
+    def _get_shared_jira_config(self) -> Optional[dict[str, str]]:
+        """Build shared JIRA service account config from env settings.
+
+        Returns None if shared JIRA is not configured.
+        """
+        if not self.settings.jira_shared_api_token:
+            return None
+        return {
+            "jira_url": self.settings.jira_shared_url or "",
+            "email": self.settings.jira_shared_email or "",
+            "api_token": self.settings.jira_shared_api_token,
+        }
+
     async def _manual_check_transcripts(
         self, client: AsyncWebClient, channel_id: str, user_id: str
     ) -> None:
@@ -1142,6 +1809,8 @@ class SlackHandler:
         # Check if user already has a config
         existing = await self.dynamodb.get_pm_config(user_id)
 
+        shared_jira_configured = bool(self.settings.jira_shared_api_token)
+
         blocks = [
             {"type": "header", "text": {"type": "plain_text", "text": "Basic Information"}},
             {
@@ -1162,41 +1831,55 @@ class SlackHandler:
             },
             {"type": "divider"},
             {"type": "header", "text": {"type": "plain_text", "text": "JIRA Configuration"}},
-            {
-                "type": "input", "block_id": "jira_url_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "jira_url_input",
-                    "placeholder": {"type": "plain_text", "text": "https://company.atlassian.net"},
-                    **({"initial_value": existing["jira_config"]["jira_url"]} if existing and existing.get("jira_config", {}).get("jira_url") else {}),
+        ]
+
+        if shared_jira_configured:
+            # Shared service token — PM only needs project keys
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "_Using shared JIRA service account. You only need to provide your project key(s)._"}],
+            })
+        else:
+            # Individual JIRA credentials
+            blocks.extend([
+                {
+                    "type": "input", "block_id": "jira_url_block",
+                    "element": {
+                        "type": "plain_text_input", "action_id": "jira_url_input",
+                        "placeholder": {"type": "plain_text", "text": "https://company.atlassian.net"},
+                        **({"initial_value": existing["jira_config"]["jira_url"]} if existing and existing.get("jira_config", {}).get("jira_url") else {}),
+                    },
+                    "label": {"type": "plain_text", "text": "JIRA URL"},
                 },
-                "label": {"type": "plain_text", "text": "JIRA URL"},
-            },
-            {
-                "type": "input", "block_id": "jira_email_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "jira_email_input",
-                    "placeholder": {"type": "plain_text", "text": "you@company.com"},
-                    **({"initial_value": existing["jira_config"]["email"]} if existing and existing.get("jira_config", {}).get("email") else {}),
+                {
+                    "type": "input", "block_id": "jira_email_block",
+                    "element": {
+                        "type": "plain_text_input", "action_id": "jira_email_input",
+                        "placeholder": {"type": "plain_text", "text": "you@company.com"},
+                        **({"initial_value": existing["jira_config"]["email"]} if existing and existing.get("jira_config", {}).get("email") else {}),
+                    },
+                    "label": {"type": "plain_text", "text": "JIRA Email"},
                 },
-                "label": {"type": "plain_text", "text": "JIRA Email"},
-            },
-            {
-                "type": "input", "block_id": "jira_token_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "jira_token_input",
-                    "placeholder": {"type": "plain_text", "text": "ATATT3x..." if not existing else "Leave empty to keep current"},
+                {
+                    "type": "input", "block_id": "jira_token_block",
+                    "element": {
+                        "type": "plain_text_input", "action_id": "jira_token_input",
+                        "placeholder": {"type": "plain_text", "text": "ATATT3x..." if not existing else "Leave empty to keep current"},
+                    },
+                    "label": {"type": "plain_text", "text": "JIRA API Token"},
+                    **({"optional": True} if existing else {}),
                 },
-                "label": {"type": "plain_text", "text": "JIRA API Token"},
-                **({"optional": True} if existing else {}),
-            },
+            ])
+
+        blocks.extend([
             {
                 "type": "input", "block_id": "jira_project_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "jira_project_input",
-                    "placeholder": {"type": "plain_text", "text": "LAN"},
-                    **({"initial_value": existing["jira_config"]["project_key"]} if existing and existing.get("jira_config", {}).get("project_key") else {}),
+                    "placeholder": {"type": "plain_text", "text": "LAN, PROJ2, INFRA"},
+                    **({"initial_value": ",".join(existing["jira_config"].get("project_keys", [existing["jira_config"].get("project_key", "")]))} if existing and existing.get("jira_config", {}).get("project_key") else {}),
                 },
-                "label": {"type": "plain_text", "text": "JIRA Project Key"},
+                "label": {"type": "plain_text", "text": "JIRA Project Keys (comma-separated)"},
             },
             {"type": "divider"},
             {"type": "header", "text": {"type": "plain_text", "text": "Google Drive Configuration"}},
@@ -1249,18 +1932,11 @@ class SlackHandler:
                 "label": {"type": "plain_text", "text": "Folder Name (optional fallback)"},
                 "optional": True,
             },
-        ]
+        ])
 
-        # If updating existing config, handle secrets
+        # Flag whether this is an update (secrets will be read from DynamoDB on submission)
         if existing:
-            jira_token = existing.get("jira_config", {}).get("api_token", "")
-            gdrive_key = existing.get("gdrive_config", {}).get("private_key", "")
-
-            # Store current secrets as private_metadata so submission can use them
-            private_metadata = json.dumps({
-                "existing_jira_token": jira_token,
-                "existing_gdrive_key": gdrive_key,
-            })
+            private_metadata = json.dumps({"is_update": True})
         else:
             private_metadata = ""
 
@@ -1316,9 +1992,10 @@ class SlackHandler:
                 "type": "input", "block_id": "jira_project_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "jira_project_input",
-                    **({"initial_value": jira["project_key"]} if jira.get("project_key") else {}),
+                    "placeholder": {"type": "plain_text", "text": "LAN, PROJ2, INFRA"},
+                    **({"initial_value": ",".join(jira.get("project_keys", [jira.get("project_key", "")]))} if jira.get("project_key") or jira.get("project_keys") else {}),
                 },
-                "label": {"type": "plain_text", "text": "JIRA Project Key"},
+                "label": {"type": "plain_text", "text": "JIRA Project Keys (comma-separated)"},
             },
         ]
 
@@ -1437,7 +2114,7 @@ class SlackHandler:
             f"  URL: `{jira.get('jira_url', 'N/A')}`\n"
             f"  Email: `{jira.get('email', 'N/A')}`\n"
             f"  API Token: `{token_masked}`\n"
-            f"  Project: `{jira.get('project_key', 'N/A')}`\n\n"
+            f"  Projects: `{', '.join(jira.get('project_keys', [jira.get('project_key', 'N/A')]))}`\n\n"
             f"*Google Drive:*\n"
             f"  Project ID: `{gdrive.get('project_id', 'N/A')}`\n"
             f"  Service Account: `{gdrive.get('client_email', 'N/A')}`\n"
@@ -1457,6 +2134,130 @@ class SlackHandler:
     # ==========================================
     # ADMIN COMMANDS
     # ==========================================
+
+    async def _open_schedule_modal(
+        self, client: AsyncWebClient, trigger_id: str, user_id: str
+    ) -> None:
+        """Open schedule configuration modal."""
+        existing = await self.dynamodb.get_pm_config(user_id) if self.dynamodb else None
+        schedule = existing.get("schedule_config", {}) if existing else {}
+
+        blocks = [
+            {
+                "type": "input", "block_id": "schedule_enabled_block",
+                "element": {
+                    "type": "checkboxes", "action_id": "schedule_enabled_input",
+                    "options": [{
+                        "text": {"type": "plain_text", "text": "Enable recurring sync"},
+                        "value": "enabled",
+                    }],
+                    **({"initial_options": [{
+                        "text": {"type": "plain_text", "text": "Enable recurring sync"},
+                        "value": "enabled",
+                    }]} if schedule.get("enabled") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Schedule"},
+                "optional": True,
+            },
+            {
+                "type": "input", "block_id": "cron_preset_block",
+                "element": {
+                    "type": "static_select", "action_id": "cron_preset_input",
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "Daily at 9 AM"}, "value": "0 9 * * *"},
+                        {"text": {"type": "plain_text", "text": "Weekdays at 9 AM"}, "value": "0 9 * * 1-5"},
+                        {"text": {"type": "plain_text", "text": "Every Monday at 9 AM"}, "value": "0 9 * * 1"},
+                        {"text": {"type": "plain_text", "text": "Custom (enter below)"}, "value": "custom"},
+                    ],
+                },
+                "label": {"type": "plain_text", "text": "Frequency"},
+            },
+            {
+                "type": "input", "block_id": "cron_custom_block",
+                "element": {
+                    "type": "plain_text_input", "action_id": "cron_custom_input",
+                    "placeholder": {"type": "plain_text", "text": "0 9 * * 1-5"},
+                    **({"initial_value": schedule.get("cron_expression", "")} if schedule.get("cron_expression") else {}),
+                },
+                "label": {"type": "plain_text", "text": "Custom Cron Expression (only if Custom selected above)"},
+                "optional": True,
+            },
+            {
+                "type": "input", "block_id": "timezone_block",
+                "element": {
+                    "type": "static_select", "action_id": "timezone_input",
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "US/Eastern"}, "value": "America/New_York"},
+                        {"text": {"type": "plain_text", "text": "US/Central"}, "value": "America/Chicago"},
+                        {"text": {"type": "plain_text", "text": "US/Pacific"}, "value": "America/Los_Angeles"},
+                        {"text": {"type": "plain_text", "text": "UTC"}, "value": "UTC"},
+                        {"text": {"type": "plain_text", "text": "Europe/London"}, "value": "Europe/London"},
+                        {"text": {"type": "plain_text", "text": "Europe/Berlin"}, "value": "Europe/Berlin"},
+                        {"text": {"type": "plain_text", "text": "Asia/Tokyo"}, "value": "Asia/Tokyo"},
+                    ],
+                },
+                "label": {"type": "plain_text", "text": "Timezone"},
+            },
+            {
+                "type": "input", "block_id": "target_channel_block",
+                "element": {
+                    "type": "conversations_select", "action_id": "target_channel_input",
+                    **({"default_to_current_conversation": True}),
+                },
+                "label": {"type": "plain_text", "text": "Results Channel"},
+            },
+        ]
+
+        view = {
+            "type": "modal",
+            "callback_id": "schedule_config_modal",
+            "title": {"type": "plain_text", "text": "Sync Schedule"},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": blocks,
+        }
+
+        await client.views_open(trigger_id=trigger_id, view=view)
+
+    async def _handle_schedule_submission(
+        self, body: dict, client: AsyncWebClient, view: dict
+    ) -> None:
+        """Handle schedule config modal submission."""
+        user_id = body["user"]["id"]
+        values = view["state"]["values"]
+
+        enabled_options = values["schedule_enabled_block"]["schedule_enabled_input"].get("selected_options", [])
+        enabled = any(o.get("value") == "enabled" for o in enabled_options)
+
+        cron_preset = values["cron_preset_block"]["cron_preset_input"].get("selected_option", {}).get("value", "")
+        cron_custom = (values["cron_custom_block"]["cron_custom_input"].get("value") or "").strip()
+
+        cron_expression = cron_custom if cron_preset == "custom" and cron_custom else cron_preset
+
+        tz = values["timezone_block"]["timezone_input"].get("selected_option", {}).get("value", "UTC")
+        target_channel = values["target_channel_block"]["target_channel_input"].get("selected_conversation", user_id)
+
+        schedule_config = {
+            "enabled": enabled,
+            "cron_expression": cron_expression,
+            "timezone": tz,
+            "target_channel": target_channel,
+            "last_scheduled_run": "",
+        }
+
+        try:
+            await self.dynamodb.update_pm(user_id, {"schedule_config": schedule_config})
+            status = "enabled" if enabled else "disabled"
+            await client.chat_postMessage(
+                channel=user_id,
+                text=f"Sync schedule {status}. Cron: `{cron_expression}` ({tz}), Channel: <#{target_channel}>",
+            )
+        except Exception as e:
+            logger.exception("Failed to save schedule config")
+            await client.chat_postMessage(
+                channel=user_id,
+                text=f"Failed to save schedule: {str(e)}",
+            )
 
     async def _admin_list_pms(
         self, client: AsyncWebClient, channel_id: str, user_id: str
@@ -1556,6 +2357,43 @@ class SlackHandler:
         )
 
         await client.chat_postEphemeral(channel=channel_id, user=user_id, text=text)
+
+    async def _admin_audit_log(
+        self, client: AsyncWebClient, channel_id: str, user_id: str,
+        session_uuid: Optional[str] = None,
+    ) -> None:
+        """Show audit log entries for a session or recent entries."""
+        try:
+            entries = await self.db.get_audit_log(
+                session_uuid=session_uuid, limit=25
+            )
+        except Exception as e:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"Failed to fetch audit log: {str(e)}",
+            )
+            return
+
+        if not entries:
+            await client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text="No audit log entries found.",
+            )
+            return
+
+        header = f"*Audit Log* (session: `{session_uuid}`)" if session_uuid else "*Audit Log* (latest 25)"
+        lines = [header, ""]
+        for entry in entries:
+            ts = entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            user_display = f"<@{entry.user_id}>" if entry.user_id else "system"
+            line = f"`{ts}` | `{entry.event_type.value}` | {user_display}"
+            if entry.proposal_id:
+                line += f" | proposal: `{entry.proposal_id}`"
+            lines.append(line)
+
+        await client.chat_postEphemeral(
+            channel=channel_id, user=user_id, text="\n".join(lines)
+        )
 
     async def start(self) -> None:
         """Start the Slack handler."""

@@ -14,6 +14,5 @@ boto3>=1.28.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# Development
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
+# Scheduling
+croniter>=1.3.0

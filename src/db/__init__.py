@@ -1,6 +1,8 @@
 """Database module for JIRA Slack Agent."""
 
 from .models import (
+    AuditEntry,
+    AuditEventType,
     Session,
     SessionStatus,
     MarkedMessage,
@@ -12,6 +14,8 @@ from .models import (
 from .manager import DatabaseManager
 
 __all__ = [
+    "AuditEntry",
+    "AuditEventType",
     "Session",
     "SessionStatus",
     "MarkedMessage",

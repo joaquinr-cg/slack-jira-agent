@@ -66,10 +66,24 @@ class Settings(BaseSettings):
     trigger_auto_sync: bool = True  # Auto-trigger jira-sync when new transcripts found
 
     # ==========================================
+    # SHARED JIRA SERVICE ACCOUNT (optional)
+    # When set, PMs don't need individual JIRA tokens.
+    # PMs still provide their own project key(s).
+    # ==========================================
+    jira_shared_url: Optional[str] = None
+    jira_shared_email: Optional[str] = None
+    jira_shared_api_token: Optional[str] = None
+
+    # ==========================================
+    # SYNC SCHEDULER CONFIGURATION
+    # ==========================================
+    sync_schedule_check_interval: int = 60  # How often to check schedules (seconds)
+
+    # ==========================================
     # APPLICATION CONFIGURATION
     # ==========================================
     request_timeout: int = 300  # 5 minutes for LLM processing
-    log_level: str = "DEBUG"  # Set to DEBUG for troubleshooting
+    log_level: str = "INFO"
 
     # Emoji configuration
     mark_emoji: str = "ticket"  # 🎫

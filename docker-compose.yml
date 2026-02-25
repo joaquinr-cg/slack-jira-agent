@@ -11,10 +11,11 @@ services:
       # Mount credentials (read-only)
       - ./credentials:/app/credentials:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "print('ok')"]
+      test: ["CMD", "python", "-c", "import os, signal; os.kill(1, 0)"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 15s
     logging:
       driver: "json-file"
       options:
