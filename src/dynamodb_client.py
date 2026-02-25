@@ -219,9 +219,9 @@ class DynamoDBClient:
 
 
 # LangBuilder flow component instance IDs (from the deployed jira-tickets flow)
-COMPONENT_ID_GDRIVE_PARSER = "CustomComponent-swCo4"      # GoogleDriveDocsParserSA
-COMPONENT_ID_JIRA_STATE_FETCHER = "CustomComponent-h9t4Q"  # JiraStateFetcher (read)
-COMPONENT_ID_JIRA_READER_WRITER = "CustomComponent-MvTpp"  # JiraReaderWriter (read/write)
+COMPONENT_ID_GDRIVE_PARSER = "GoogleDriveDocsParserSA-UWTSm"      # GoogleDriveDocsParserSA
+COMPONENT_ID_JIRA_STATE_FETCHER = "JiraStateFetcher-uGTUl"        # JiraStateFetcher (read)
+COMPONENT_ID_JIRA_READER_WRITER = "JiraReaderWriter-WXT1i"        # JiraReaderWriter (read/write)
 
 # LangBuilder flow component instance IDs (from the deployed trigger/automatic-parser flow)
 TRIGGER_COMPONENT_ID_TRANSCRIPT = "TranscriptTrigger-NxiAw"

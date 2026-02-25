@@ -41,7 +41,7 @@ class LangBuilderClient:
     """
 
     # Default ChatInput component ID (main jira-tickets flow)
-    DEFAULT_CHAT_INPUT_ID = "ChatInput-UMrKl"
+    DEFAULT_CHAT_INPUT_ID = "ChatInput-6AJBJ"
 
     def __init__(
         self,
