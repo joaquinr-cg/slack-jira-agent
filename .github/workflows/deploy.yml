@@ -19,5 +19,5 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             docker build --no-cache -t slack-jira-agent .
-            docker compose down
-            docker compose up -d
+            docker-compose down
+            docker-compose up -d
