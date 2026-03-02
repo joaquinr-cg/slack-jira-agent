@@ -11,6 +11,17 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
+class _SlackBearerAuth(httpx.Auth):
+    """Bearer auth that persists through Slack's cross-origin redirects."""
+
+    def __init__(self, token: str):
+        self.token = token
+
+    def auth_flow(self, request):
+        request.headers["Authorization"] = f"Bearer {self.token}"
+        yield request
+
+
 def download_slack_file(url_private: str, bot_token: str) -> bytes:
     """Download a file from Slack using the bot token for auth.
 
@@ -26,7 +37,7 @@ def download_slack_file(url_private: str, bot_token: str) -> bytes:
     """
     response = httpx.get(
         url_private,
-        headers={"Authorization": f"Bearer {bot_token}"},
+        auth=_SlackBearerAuth(bot_token),
         follow_redirects=True,
         timeout=30.0,
     )
