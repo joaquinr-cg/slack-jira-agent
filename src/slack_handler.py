@@ -28,6 +28,7 @@ from .dynamodb_client import (
     DynamoDBClient,
     build_tweaks_from_pm_config,
 )
+from .file_extractor import extract_text_from_slack_file
 from .langbuilder_client import (
     LangBuilderClient,
     LangBuilderError,
@@ -172,6 +173,25 @@ class SlackHandler:
             # Strip the bot mention from the text
             bot_user_id = await self.get_bot_user_id(client)
             clean_text = re.sub(rf"<@{bot_user_id}>", "", text).strip()
+
+            # Extract text from uploaded files (if any)
+            files = event.get("files", [])
+            file_texts = []
+            for file_info in files:
+                result = await extract_text_from_slack_file(
+                    file_info, self.settings.slack_bot_token
+                )
+                if result and result["extracted_text"]:
+                    file_texts.append(
+                        f"--- File: {result['filename']} ---\n{result['extracted_text']}"
+                    )
+
+            if file_texts:
+                file_context = "\n\n".join(file_texts)
+                if clean_text:
+                    clean_text = f"{clean_text}\n\n{file_context}"
+                else:
+                    clean_text = file_context
 
             if not clean_text:
                 await client.chat_postMessage(
