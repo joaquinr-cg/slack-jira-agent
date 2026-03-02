@@ -188,19 +188,29 @@ class SlackHandler:
                         file_texts.append(f"[Attached file: {name} — no download URL]")
                         continue
                     try:
+                        # Disable auto-redirect so we can re-attach the auth
+                        # header on each hop (Slack strips it on cross-origin redirects).
+                        auth_headers = {"Authorization": f"Bearer {self.settings.slack_bot_token}"}
                         async with aiohttp.ClientSession() as session:
-                            async with session.get(
-                                url,
-                                headers={"Authorization": f"Bearer {self.settings.slack_bot_token}"},
-                            ) as resp:
-                                if resp.status == 200:
-                                    raw = await resp.read()
-                                    logger.info("Downloaded file %s: %d bytes", name, len(raw))
-                                    extracted = extract_text_from_bytes(raw, mime, name)
-                                    file_texts.append(f"--- File: {name} ---\n{extracted}")
-                                else:
-                                    logger.error("Failed to download %s: HTTP %d", name, resp.status)
-                                    file_texts.append(f"[Attached file: {name} — download failed: HTTP {resp.status}]")
+                            current_url = url
+                            for _ in range(5):  # max redirects
+                                async with session.get(
+                                    current_url,
+                                    headers=auth_headers,
+                                    allow_redirects=False,
+                                ) as resp:
+                                    if resp.status in (301, 302, 303, 307, 308):
+                                        current_url = resp.headers.get("Location", "")
+                                        continue
+                                    if resp.status == 200:
+                                        raw = await resp.read()
+                                        logger.info("Downloaded file %s: %d bytes", name, len(raw))
+                                        extracted = extract_text_from_bytes(raw, mime, name)
+                                        file_texts.append(f"--- File: {name} ---\n{extracted}")
+                                    else:
+                                        logger.error("Failed to download %s: HTTP %d", name, resp.status)
+                                        file_texts.append(f"[Attached file: {name} — download failed: HTTP {resp.status}]")
+                                    break
                     except Exception as e:
                         logger.error("Error downloading file %s: %s", name, str(e))
                         file_texts.append(f"[Attached file: {name} — error: {str(e)[:100]}]")
