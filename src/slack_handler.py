@@ -189,12 +189,24 @@ class SlackHandler:
                         file_texts.append(f"[Attached file: {name} — no download URL]")
                         continue
                     try:
-                        # Use urllib.request which handles Slack's redirects
-                        # correctly (aiohttp/httpx strip or mishandle auth).
+                        # Use urllib with a custom redirect handler that
+                        # preserves the Authorization header on every hop.
                         def _download(dl_url: str, token: str) -> bytes:
+                            class _AuthRedirectHandler(urllib.request.HTTPRedirectHandler):
+                                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                                    new_req = super().redirect_request(
+                                        req, fp, code, msg, headers, newurl,
+                                    )
+                                    if new_req is not None:
+                                        new_req.add_unredirected_header(
+                                            "Authorization", f"Bearer {token}",
+                                        )
+                                    return new_req
+
+                            opener = urllib.request.build_opener(_AuthRedirectHandler)
                             req = urllib.request.Request(dl_url)
                             req.add_header("Authorization", f"Bearer {token}")
-                            with urllib.request.urlopen(req, timeout=30) as resp:
+                            with opener.open(req, timeout=30) as resp:
                                 return resp.read()
 
                         raw = await asyncio.to_thread(
