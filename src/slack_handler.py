@@ -19,7 +19,12 @@ from .db import (
     ProposalStatus,
     SessionStatus,
 )
-from .dynamodb_client import DynamoDBClient, build_tweaks_from_pm_config
+from .dynamodb_client import (
+    COMPONENT_ID_JIRA_READER_WRITER,
+    COMPONENT_ID_JIRA_STATE_FETCHER,
+    DynamoDBClient,
+    build_tweaks_from_pm_config,
+)
 from .langbuilder_client import (
     LangBuilderClient,
     LangBuilderError,
@@ -579,6 +584,13 @@ class SlackHandler:
                 )
             else:
                 logger.info("No PM config in DynamoDB for %s, using defaults", user_id)
+                # Still pass shared JIRA creds so components can read/write
+                shared_jira = self._get_shared_jira_config()
+                if shared_jira:
+                    extra_tweaks = {
+                        COMPONENT_ID_JIRA_READER_WRITER: {**shared_jira, "auth_type": "basic"},
+                        COMPONENT_ID_JIRA_STATE_FETCHER: {**shared_jira, "auth_type": "basic"},
+                    }
 
         # Get unprocessed marked messages (skip if transcripts_only mode)
         marked_messages = []
@@ -1606,6 +1618,14 @@ class SlackHandler:
                         default_gdrive=self._get_default_gdrive_config(),
                         shared_jira=self._get_shared_jira_config(),
                     )
+                else:
+                    # No PM config — still pass shared JIRA creds for execution
+                    shared_jira = self._get_shared_jira_config()
+                    if shared_jira:
+                        extra_tweaks = {
+                            COMPONENT_ID_JIRA_READER_WRITER: {**shared_jira, "auth_type": "basic"},
+                            COMPONENT_ID_JIRA_STATE_FETCHER: {**shared_jira, "auth_type": "basic"},
+                        }
 
         # Build the decision summary for the LLM
         decisions = []
