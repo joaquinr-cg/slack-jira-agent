@@ -306,18 +306,20 @@ class SlackHandler:
                     channel=channel_id,
                     user=user_id,
                     text=(
-                        "*Available commands:*\n"
-                        "`/jira-agent setup` - Configure your JIRA & GDrive credentials\n"
-                        "`/jira-agent config` - View your current configuration\n"
-                        "`/jira-agent update jira` - Update JIRA credentials\n"
-                        "`/jira-agent update gdrive` - Update Google Drive folder\n"
-                        "`/jira-agent check-transcripts` - Manually check for new transcripts\n"
-                        "`/jira-agent schedule` - Configure recurring sync schedule\n"
-                        "`/jira-agent admin list` - List all PMs (admin)\n"
-                        "`/jira-agent admin disable <slack_id>` - Disable a PM (admin)\n"
-                        "`/jira-agent admin enable <slack_id>` - Enable a PM (admin)\n"
-                        "`/jira-agent admin stats` - Usage statistics (admin)\n"
-                        "`/jira-agent admin audit [session_uuid]` - View audit log (admin)"
+                        "*Available commands:*\n\n"
+                        "*/jira-agent setup*\nConfigure your JIRA & GDrive credentials\n\n"
+                        "*/jira-agent config*\nView your current configuration\n\n"
+                        "*/jira-agent update jira*\nUpdate JIRA credentials\n\n"
+                        "*/jira-agent update gdrive*\nUpdate Google Drive folder\n\n"
+                        "*/jira-agent check-transcripts*\nManually check for new transcripts\n\n"
+                        "*/jira-agent schedule*\nConfigure recurring sync schedule\n\n"
+                        "*Admin commands:*\n\n"
+                        "*/jira-agent admin list*\nList all PMs\n\n"
+                        "*/jira-agent admin disable* _<slack_id>_\nDisable a PM\n\n"
+                        "*/jira-agent admin enable* _<slack_id>_\nEnable a PM\n\n"
+                        "*/jira-agent admin stats*\nUsage statistics\n\n"
+                        "*/jira-agent admin audit*\nView full audit log\n\n"
+                        "*/jira-agent admin audit* _<session_uuid>_\nView audit log for a specific session"
                     ),
                 )
 
