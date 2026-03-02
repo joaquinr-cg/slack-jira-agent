@@ -1,75 +1,68 @@
 """
 Slack File Reader Component (Tool Mode)
 
-Downloads and extracts text from Slack file attachments.
+Extracts text from Slack file attachments that were pre-downloaded by the bot.
+The bot downloads the file from Slack (handling auth), base64-encodes it,
+and passes the content via tweaks. This component decodes and extracts text.
+
 Supports PDF, DOCX, plain text, CSV, JSON, and XML files.
 
-Used as a tool by AI agents to read files uploaded by users in Slack.
-The bot_token is injected at runtime via tweaks — the agent only needs
-to provide file_url, filename, and mimetype.
-
 Architecture:
-Agent → Slack File Reader → Slack Files API → text extraction
+Bot (downloads from Slack) → base64 via tweaks → SlackFileReader → text extraction
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
 from typing import Any
 
-import httpx
 from loguru import logger
 
 from langbuilder.custom.custom_component.component import Component
 from langbuilder.io import (
     MessageTextInput,
+    MultilineInput,
     Output,
-    SecretStrInput,
 )
 from langbuilder.schema.message import Message
 
 
 class SlackFileReaderComponent(Component):
-    """Download and extract text from Slack file uploads.
+    """Extract text from Slack file uploads.
 
+    File content is pre-downloaded by the bot and passed as base64 via tweaks.
     Supports PDF, DOCX, plain text, CSV, JSON, and XML.
-    The bot_token is injected via tweaks at runtime.
     """
 
     display_name = "Slack File Reader"
-    description = "Download and extract text from Slack file uploads (PDF, DOCX, TXT, CSV). Use this when the user's message contains [Attached file: ...] metadata."
+    description = "Extract text from Slack file uploads (PDF, DOCX, TXT, CSV). The file content is pre-loaded by the bot. Call this tool when the user's message mentions an attached file."
     icon = "FileText"
     name = "SlackFileReader"
 
     inputs = [
-        # === Auth (injected via tweaks, NOT set by agent) ===
-        SecretStrInput(
-            name="bot_token",
-            display_name="Slack Bot Token",
-            info="Slack bot token (xoxb-...) for downloading files. Injected via tweaks at runtime.",
+        # === Pre-loaded content (injected via tweaks by the bot) ===
+        MultilineInput(
+            name="file_content_b64",
+            display_name="File Content (base64)",
+            info="Base64-encoded file content, injected by the bot via tweaks.",
             required=False,
+            advanced=True,
         ),
-        # === Tool-mode inputs (agent sets these) ===
-        MessageTextInput(
-            name="file_url",
-            display_name="File URL",
-            info="The file download URL from the [Attached file: ...] metadata in the user's message.",
-            required=True,
-            tool_mode=True,
-        ),
+        # === Metadata (injected via tweaks AND/OR set by agent) ===
         MessageTextInput(
             name="filename",
             display_name="Filename",
-            info="Original filename (e.g., 'proposal.docx') from the attachment metadata.",
-            required=True,
+            info="Original filename (e.g., 'proposal.docx').",
+            required=False,
             tool_mode=True,
         ),
         MessageTextInput(
             name="mimetype",
             display_name="MIME Type",
-            info="File MIME type from the attachment metadata (e.g., 'application/pdf'). Optional — will guess from filename if empty.",
+            info="File MIME type (e.g., 'application/pdf'). Will guess from filename if empty.",
             required=False,
             value="",
             tool_mode=True,
@@ -85,27 +78,20 @@ class SlackFileReaderComponent(Component):
     ]
 
     def read_file(self) -> Message:
-        """Download the file from Slack and extract text content."""
-        bot_token = self.bot_token or os.environ.get("SLACK_BOT_TOKEN", "")
-        file_url = self.file_url
-        filename = self.filename
+        """Decode base64 file content and extract text."""
+        content_b64 = self.file_content_b64
+        filename = self.filename or "unknown"
         mimetype = self.mimetype or self._guess_mimetype(filename)
 
-        if not bot_token:
+        if not content_b64:
             return Message(text=json.dumps({
                 "success": False,
-                "error": "No Slack bot token configured. Ensure SLACK_BOT_TOKEN is set.",
-            }))
-
-        if not file_url:
-            return Message(text=json.dumps({
-                "success": False,
-                "error": "No file URL provided.",
+                "error": "No file content available. The file may not have been uploaded with this message.",
             }))
 
         try:
-            file_bytes = self._download(file_url, bot_token)
-            logger.info(f"Downloaded {filename}: {len(file_bytes)} bytes")
+            file_bytes = base64.b64decode(content_b64)
+            logger.info(f"Decoding file {filename}: {len(file_bytes)} bytes")
 
             text = self._extract_text(file_bytes, mimetype, filename)
 
@@ -124,19 +110,6 @@ class SlackFileReaderComponent(Component):
                 "filename": filename,
                 "error": str(e),
             }))
-
-    def _download(self, url: str, token: str) -> bytes:
-        """Download file from Slack, manually following redirects to preserve auth."""
-        headers = {"Authorization": f"Bearer {token}"}
-        with httpx.Client(timeout=60.0) as client:
-            response = client.get(url, headers=headers, follow_redirects=False)
-            max_redirects = 5
-            while response.is_redirect and max_redirects > 0:
-                redirect_url = response.headers.get("location", "")
-                response = client.get(redirect_url, headers=headers, follow_redirects=False)
-                max_redirects -= 1
-            response.raise_for_status()
-            return response.content
 
     def _extract_text(self, file_bytes: bytes, mimetype: str, filename: str) -> str:
         """Extract text from file bytes based on MIME type."""

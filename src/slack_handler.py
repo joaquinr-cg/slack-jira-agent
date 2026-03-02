@@ -1,9 +1,12 @@
 """Slack event handler for JIRA Reviewer Agent."""
 
+import base64
 import json
 import logging
 import re
 from typing import Optional, Set
+
+import aiohttp
 
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
@@ -173,17 +176,47 @@ class SlackHandler:
             bot_user_id = await self.get_bot_user_id(client)
             clean_text = re.sub(rf"<@{bot_user_id}>", "", text).strip()
 
-            # Describe uploaded files so the agent can use the file reader tool
+            # Download uploaded files and pass as base64 for the file reader tool
             files = event.get("files", [])
+            downloaded_files: list[dict] = []
             if files:
                 file_descriptions = []
                 for f in files:
                     url = f.get("url_private_download") or f.get("url_private", "")
                     name = f.get("name", "unknown")
                     mime = f.get("mimetype", "")
-                    file_descriptions.append(
-                        f"[Attached file: {name} | mimetype: {mime} | url: {url}]"
-                    )
+                    if url:
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(
+                                    url,
+                                    headers={"Authorization": f"Bearer {self.settings.slack_bot_token}"},
+                                ) as resp:
+                                    if resp.status == 200:
+                                        raw = await resp.read()
+                                        b64 = base64.b64encode(raw).decode("ascii")
+                                        downloaded_files.append({
+                                            "filename": name,
+                                            "mimetype": mime,
+                                            "content_b64": b64,
+                                        })
+                                        file_descriptions.append(
+                                            f"[Attached file: {name} | mimetype: {mime} | content: pre-loaded via bot]"
+                                        )
+                                        logger.info("Downloaded file %s: %d bytes", name, len(raw))
+                                    else:
+                                        logger.error("Failed to download %s: HTTP %d", name, resp.status)
+                                        file_descriptions.append(
+                                            f"[Attached file: {name} | download failed: HTTP {resp.status}]"
+                                        )
+                        except Exception as e:
+                            logger.error("Error downloading file %s: %s", name, str(e))
+                            file_descriptions.append(
+                                f"[Attached file: {name} | download error: {str(e)[:100]}]"
+                            )
+                    else:
+                        file_descriptions.append(f"[Attached file: {name} | no download URL]")
+
                 file_block = "\n".join(file_descriptions)
                 clean_text = f"{clean_text}\n\n{file_block}" if clean_text else file_block
 
@@ -229,10 +262,13 @@ class SlackHandler:
                     chat_tweaks[CHAT_COMPONENT_ID_JIRA] = jira_creds
                     chat_tweaks[CHAT_COMPONENT_ID_JIRA_READER_WRITER] = jira_creds
 
-            # Inject Slack bot token for the file reader tool (if files attached)
-            if files and self.settings.langbuilder_chat_file_reader_id:
+            # Inject downloaded file content for the file reader tool
+            if downloaded_files and self.settings.langbuilder_chat_file_reader_id:
+                # Pass the first file's content via tweaks (component reads it directly)
                 chat_tweaks[self.settings.langbuilder_chat_file_reader_id] = {
-                    "bot_token": self.settings.slack_bot_token,
+                    "file_content_b64": downloaded_files[0]["content_b64"],
+                    "filename": downloaded_files[0]["filename"],
+                    "mimetype": downloaded_files[0]["mimetype"],
                 }
 
             # Use thread_ts as session_id so threaded replies share context
