@@ -1,6 +1,5 @@
 """Slack event handler for JIRA Reviewer Agent."""
 
-import base64
 import json
 import logging
 import re
@@ -13,6 +12,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from .config import Settings
 from .cron_helper import natural_language_to_cron
+from .file_extractor import extract_text_from_bytes
 from .db import (
     AuditEntry,
     AuditEventType,
@@ -176,48 +176,36 @@ class SlackHandler:
             bot_user_id = await self.get_bot_user_id(client)
             clean_text = re.sub(rf"<@{bot_user_id}>", "", text).strip()
 
-            # Download uploaded files and pass as base64 for the file reader tool
+            # Download uploaded files, extract text, and append to message
             files = event.get("files", [])
-            downloaded_files: list[dict] = []
             if files:
-                file_descriptions = []
+                file_texts = []
                 for f in files:
                     url = f.get("url_private_download") or f.get("url_private", "")
                     name = f.get("name", "unknown")
-                    mime = f.get("mimetype", "")
-                    if url:
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.get(
-                                    url,
-                                    headers={"Authorization": f"Bearer {self.settings.slack_bot_token}"},
-                                ) as resp:
-                                    if resp.status == 200:
-                                        raw = await resp.read()
-                                        b64 = base64.b64encode(raw).decode("ascii")
-                                        downloaded_files.append({
-                                            "filename": name,
-                                            "mimetype": mime,
-                                            "content_b64": b64,
-                                        })
-                                        file_descriptions.append(
-                                            f"[Attached file: {name} | mimetype: {mime} | content: pre-loaded via bot]"
-                                        )
-                                        logger.info("Downloaded file %s: %d bytes", name, len(raw))
-                                    else:
-                                        logger.error("Failed to download %s: HTTP %d", name, resp.status)
-                                        file_descriptions.append(
-                                            f"[Attached file: {name} | download failed: HTTP {resp.status}]"
-                                        )
-                        except Exception as e:
-                            logger.error("Error downloading file %s: %s", name, str(e))
-                            file_descriptions.append(
-                                f"[Attached file: {name} | download error: {str(e)[:100]}]"
-                            )
-                    else:
-                        file_descriptions.append(f"[Attached file: {name} | no download URL]")
+                    mime = f.get("mimetype", "application/octet-stream")
+                    if not url:
+                        file_texts.append(f"[Attached file: {name} — no download URL]")
+                        continue
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(
+                                url,
+                                headers={"Authorization": f"Bearer {self.settings.slack_bot_token}"},
+                            ) as resp:
+                                if resp.status == 200:
+                                    raw = await resp.read()
+                                    logger.info("Downloaded file %s: %d bytes", name, len(raw))
+                                    extracted = extract_text_from_bytes(raw, mime, name)
+                                    file_texts.append(f"--- File: {name} ---\n{extracted}")
+                                else:
+                                    logger.error("Failed to download %s: HTTP %d", name, resp.status)
+                                    file_texts.append(f"[Attached file: {name} — download failed: HTTP {resp.status}]")
+                    except Exception as e:
+                        logger.error("Error downloading file %s: %s", name, str(e))
+                        file_texts.append(f"[Attached file: {name} — error: {str(e)[:100]}]")
 
-                file_block = "\n".join(file_descriptions)
+                file_block = "\n\n".join(file_texts)
                 clean_text = f"{clean_text}\n\n{file_block}" if clean_text else file_block
 
             if not clean_text:
@@ -261,15 +249,6 @@ class SlackHandler:
                     }
                     chat_tweaks[CHAT_COMPONENT_ID_JIRA] = jira_creds
                     chat_tweaks[CHAT_COMPONENT_ID_JIRA_READER_WRITER] = jira_creds
-
-            # Inject downloaded file content for the file reader tool
-            if downloaded_files and self.settings.langbuilder_chat_file_reader_id:
-                # Pass the first file's content via tweaks (component reads it directly)
-                chat_tweaks[self.settings.langbuilder_chat_file_reader_id] = {
-                    "file_content_b64": downloaded_files[0]["content_b64"],
-                    "filename": downloaded_files[0]["filename"],
-                    "mimetype": downloaded_files[0]["mimetype"],
-                }
 
             # Use thread_ts as session_id so threaded replies share context
             session_id = f"slack-chat-{thread_ts}"
