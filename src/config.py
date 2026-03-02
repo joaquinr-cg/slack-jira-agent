@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     # ==========================================
     # APPLICATION CONFIGURATION
     # ==========================================
+    anthropic_api_key: Optional[str] = None  # Optional: enables natural language schedule input
     request_timeout: int = 300  # 5 minutes for LLM processing
     log_level: str = "INFO"
 

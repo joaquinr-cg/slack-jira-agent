@@ -8,6 +8,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
 from .config import Settings
+from .cron_helper import natural_language_to_cron
 from .db import (
     AuditEntry,
     AuditEventType,
@@ -2098,10 +2099,10 @@ class SlackHandler:
                 "type": "input", "block_id": "cron_custom_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "cron_custom_input",
-                    "placeholder": {"type": "plain_text", "text": "0 9 * * 1-5"},
+                    "placeholder": {"type": "plain_text", "text": "e.g. every weekday at 3pm"},
                     **({"initial_value": schedule.get("cron_expression", "")} if schedule.get("cron_expression") else {}),
                 },
-                "label": {"type": "plain_text", "text": "Custom Cron Expression (only if Custom selected above)"},
+                "label": {"type": "plain_text", "text": "Describe your schedule (only if Custom selected above)"},
                 "optional": True,
             },
             {
@@ -2154,7 +2155,23 @@ class SlackHandler:
         cron_preset = values["cron_preset_block"]["cron_preset_input"].get("selected_option", {}).get("value", "")
         cron_custom = (values["cron_custom_block"]["cron_custom_input"].get("value") or "").strip()
 
-        cron_expression = cron_custom if cron_preset == "custom" and cron_custom else cron_preset
+        schedule_description = ""
+        if cron_preset == "custom" and cron_custom:
+            if self.settings.anthropic_api_key:
+                cron_expression = await natural_language_to_cron(cron_custom, self.settings.anthropic_api_key)
+                schedule_description = cron_custom
+            else:
+                cron_expression = cron_custom
+        else:
+            cron_expression = cron_preset
+
+        from croniter import croniter
+        if not croniter.is_valid(cron_expression):
+            await client.chat_postMessage(
+                channel=user_id,
+                text=f"Invalid schedule: `{cron_expression}`. Please use a valid cron expression or natural language description.",
+            )
+            return
 
         tz = values["timezone_block"]["timezone_input"].get("selected_option", {}).get("value", "UTC")
         target_channel = values["target_channel_block"]["target_channel_input"].get("selected_conversation", user_id)
@@ -2166,13 +2183,18 @@ class SlackHandler:
             "target_channel": target_channel,
             "last_scheduled_run": "",
         }
+        if schedule_description:
+            schedule_config["schedule_description"] = schedule_description
 
         try:
             await self.dynamodb.update_pm(user_id, {"schedule_config": schedule_config})
             status = "enabled" if enabled else "disabled"
+            confirm_msg = f"Sync schedule {status}. Cron: `{cron_expression}` ({tz}), Channel: <#{target_channel}>"
+            if schedule_description:
+                confirm_msg += f"\nInterpreted as: `{cron_expression}` (from \"{schedule_description}\")"
             await client.chat_postMessage(
                 channel=user_id,
-                text=f"Sync schedule {status}. Cron: `{cron_expression}` ({tz}), Channel: <#{target_channel}>",
+                text=confirm_msg,
             )
         except Exception as e:
             logger.exception("Failed to save schedule config")
