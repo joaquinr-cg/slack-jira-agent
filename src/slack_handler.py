@@ -28,7 +28,6 @@ from .dynamodb_client import (
     DynamoDBClient,
     build_tweaks_from_pm_config,
 )
-from .file_extractor import extract_text_from_slack_file
 from .langbuilder_client import (
     LangBuilderClient,
     LangBuilderError,
@@ -174,24 +173,19 @@ class SlackHandler:
             bot_user_id = await self.get_bot_user_id(client)
             clean_text = re.sub(rf"<@{bot_user_id}>", "", text).strip()
 
-            # Extract text from uploaded files (if any)
+            # Describe uploaded files so the agent can use the file reader tool
             files = event.get("files", [])
-            file_texts = []
-            for file_info in files:
-                result = await extract_text_from_slack_file(
-                    file_info, self.settings.slack_bot_token
-                )
-                if result and result["extracted_text"]:
-                    file_texts.append(
-                        f"--- File: {result['filename']} ---\n{result['extracted_text']}"
+            if files:
+                file_descriptions = []
+                for f in files:
+                    url = f.get("url_private_download") or f.get("url_private", "")
+                    name = f.get("name", "unknown")
+                    mime = f.get("mimetype", "")
+                    file_descriptions.append(
+                        f"[Attached file: {name} | mimetype: {mime} | url: {url}]"
                     )
-
-            if file_texts:
-                file_context = "\n\n".join(file_texts)
-                if clean_text:
-                    clean_text = f"{clean_text}\n\n{file_context}"
-                else:
-                    clean_text = file_context
+                file_block = "\n".join(file_descriptions)
+                clean_text = f"{clean_text}\n\n{file_block}" if clean_text else file_block
 
             if not clean_text:
                 await client.chat_postMessage(
@@ -234,6 +228,12 @@ class SlackHandler:
                     }
                     chat_tweaks[CHAT_COMPONENT_ID_JIRA] = jira_creds
                     chat_tweaks[CHAT_COMPONENT_ID_JIRA_READER_WRITER] = jira_creds
+
+            # Inject Slack bot token for the file reader tool (if files attached)
+            if files and self.settings.langbuilder_chat_file_reader_id:
+                chat_tweaks[self.settings.langbuilder_chat_file_reader_id] = {
+                    "bot_token": self.settings.slack_bot_token,
+                }
 
             # Use thread_ts as session_id so threaded replies share context
             session_id = f"slack-chat-{thread_ts}"

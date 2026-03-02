@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     # ==========================================
     langbuilder_chat_flow_id: Optional[str] = None
     langbuilder_chat_input_id: str = "ChatInput-Ugj1E"
+    langbuilder_chat_file_reader_id: Optional[str] = None  # SlackFileReader component ID
 
     # ==========================================
     # TRIGGER FLOW CONFIGURATION
