@@ -147,10 +147,11 @@ async def extract_text_from_slack_file(
     filename = file_info.get("name", "unknown")
     mimetype = file_info.get("mimetype", "application/octet-stream")
     size = file_info.get("size", 0)
-    url_private = file_info.get("url_private")
+    # Prefer url_private_download (raw bytes) over url_private (may return HTML preview)
+    url_private = file_info.get("url_private_download") or file_info.get("url_private")
 
     if not url_private:
-        logger.warning("No url_private for file %s, skipping", filename)
+        logger.warning("No download URL for file %s, skipping", filename)
         return None
 
     if size > MAX_FILE_SIZE:
