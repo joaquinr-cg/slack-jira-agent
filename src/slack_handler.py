@@ -179,6 +179,7 @@ class SlackHandler:
             # Download uploaded files, extract text, and append to message
             files = event.get("files", [])
             if files:
+                logger.info("Slack file objects: %s", json.dumps(files, indent=2, default=str))
                 file_texts = []
                 for f in files:
                     url = f.get("url_private_download") or f.get("url_private", "")
