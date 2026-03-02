@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     gdrive_file_filter: str = ""
 
     # ==========================================
+    # CHAT FLOW CONFIGURATION
+    # Separate LangBuilder flow for @mention conversations.
+    # Allows users to talk to the bot directly to check/update JIRA.
+    # ==========================================
+    langbuilder_chat_flow_id: Optional[str] = None
+    langbuilder_chat_input_id: str = "ChatInput-Ugj1E"
+
+    # ==========================================
     # TRIGGER FLOW CONFIGURATION
     # Separate LangBuilder flow that checks GDrive for new transcripts.
     # When new transcripts are found, automatically triggers the main

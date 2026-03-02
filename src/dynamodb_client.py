@@ -223,6 +223,10 @@ COMPONENT_ID_GDRIVE_PARSER = "GoogleDriveDocsParserSA-UWTSm"      # GoogleDriveD
 COMPONENT_ID_JIRA_STATE_FETCHER = "JiraStateFetcher-uGTUl"        # JiraStateFetcher (read)
 COMPONENT_ID_JIRA_READER_WRITER = "JiraReaderWriter-WXT1i"        # JiraReaderWriter (read/write)
 
+# LangBuilder flow component instance IDs (from the deployed chat/mention flow)
+CHAT_COMPONENT_ID_JIRA = "CustomComponent-x44Qr"                  # Jira (basic read)
+CHAT_COMPONENT_ID_JIRA_READER_WRITER = "CustomComponent-YyPny"    # JiraReaderWriter (read/write)
+
 # LangBuilder flow component instance IDs (from the deployed trigger/automatic-parser flow)
 TRIGGER_COMPONENT_ID_TRANSCRIPT = "TranscriptTrigger-NxiAw"
 TRIGGER_CHAT_INPUT_ID = "ChatInput-jeWM0"

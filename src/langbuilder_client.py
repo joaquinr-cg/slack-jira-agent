@@ -161,6 +161,88 @@ class LangBuilderClient:
             logger.error("Request error: %s", str(e))
             raise LangBuilderError(f"Request error: {e}")
 
+    async def run_chat(
+        self,
+        flow_id: str,
+        chat_input_id: str,
+        session_id: str,
+        message: str,
+        extra_tweaks: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """
+        Run a conversational LangBuilder flow and return the text response.
+
+        Args:
+            flow_id: The LangBuilder flow ID to call.
+            chat_input_id: The ChatInput component ID in the flow.
+            session_id: Session ID for multi-turn memory.
+            message: Plain text message from the user.
+            extra_tweaks: Optional component tweaks (e.g. JIRA credentials).
+
+        Returns:
+            The assistant's text reply.
+        """
+        endpoint = f"{self.flow_url}/api/v1/run/{flow_id}"
+
+        tweaks = {chat_input_id: {"input_value": message}}
+        if extra_tweaks:
+            tweaks.update(extra_tweaks)
+
+        payload = {
+            "output_type": "chat",
+            "input_type": "chat",
+            "session_id": session_id,
+            "tweaks": tweaks,
+        }
+
+        logger.info("LANGBUILDER CHAT REQUEST – session=%s endpoint=%s", session_id, endpoint)
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    endpoint,
+                    json=payload,
+                    headers=self._get_headers(),
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    # Extract text from the standard response shape
+                    try:
+                        text = (
+                            data["outputs"][0]["outputs"][0]
+                            ["artifacts"]["message"]
+                        )
+                        return text
+                    except (KeyError, IndexError, TypeError):
+                        pass
+                    # Fallback paths
+                    try:
+                        text = (
+                            data["outputs"][0]["outputs"][0]
+                            ["messages"][0]["message"]
+                        )
+                        return text
+                    except (KeyError, IndexError, TypeError):
+                        pass
+
+                    logger.error("Could not extract chat text from response: %s", str(data)[:500])
+                    return "Sorry, I couldn't parse the response from the AI."
+                else:
+                    logger.error("Chat flow failed: %d – %s", response.status_code, response.text[:500])
+                    raise LangBuilderAPIError(
+                        f"Chat flow failed: {response.status_code}",
+                        response.status_code,
+                        response.text[:500],
+                    )
+
+        except httpx.TimeoutException as e:
+            logger.error("Chat request timeout after %d seconds", self.timeout)
+            raise LangBuilderTimeoutError(f"Chat request timeout: {e}")
+        except httpx.RequestError as e:
+            logger.error("Chat request error: %s", str(e))
+            raise LangBuilderError(f"Chat request error: {e}")
+
     async def send_continuation(
         self,
         session_id: str,

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Optional, Set
 
 from slack_bolt.async_app import AsyncApp
@@ -20,6 +21,8 @@ from .db import (
     SessionStatus,
 )
 from .dynamodb_client import (
+    CHAT_COMPONENT_ID_JIRA,
+    CHAT_COMPONENT_ID_JIRA_READER_WRITER,
     COMPONENT_ID_JIRA_READER_WRITER,
     COMPONENT_ID_JIRA_STATE_FETCHER,
     DynamoDBClient,
@@ -153,6 +156,97 @@ class SlackHandler:
                     )
                 except Exception:
                     pass
+
+        # ==========================================
+        # @MENTION HANDLER (conversational JIRA chat)
+        # ==========================================
+
+        @self.app.event("app_mention")
+        async def handle_app_mention(event: dict, client: AsyncWebClient) -> None:
+            """Handle @bot mentions – route to the conversational chat flow."""
+            channel_id = event["channel"]
+            user_id = event["user"]
+            text = event.get("text", "")
+            thread_ts = event.get("thread_ts") or event["ts"]
+
+            # Strip the bot mention from the text
+            bot_user_id = await self.get_bot_user_id(client)
+            clean_text = re.sub(rf"<@{bot_user_id}>", "", text).strip()
+
+            if not clean_text:
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text="Hi! Tag me with a message to check or update JIRA tickets. For example: `@PM Buddy what's the status of LAN-92?`",
+                )
+                return
+
+            if not self.settings.langbuilder_chat_flow_id:
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text="Chat flow is not configured. Set `LANGBUILDER_CHAT_FLOW_ID` to enable @mention conversations.",
+                )
+                return
+
+            # Build JIRA credential tweaks from PM config (if available)
+            chat_tweaks: dict = {}
+            if self.dynamodb:
+                pm_config = await self.dynamodb.get_pm_config(user_id)
+                if pm_config:
+                    full_tweaks = build_tweaks_from_pm_config(
+                        pm_config,
+                        shared_jira=self._get_shared_jira_config(),
+                    )
+                    # Map main-flow component IDs → chat-flow component IDs
+                    jira_creds = full_tweaks.get(COMPONENT_ID_JIRA_READER_WRITER, {})
+                    if jira_creds:
+                        chat_tweaks[CHAT_COMPONENT_ID_JIRA] = jira_creds
+                        chat_tweaks[CHAT_COMPONENT_ID_JIRA_READER_WRITER] = jira_creds
+                elif self._get_shared_jira_config():
+                    # No PM config but shared JIRA is available
+                    shared = self._get_shared_jira_config()
+                    jira_creds = {
+                        "jira_url": shared.get("jira_url", ""),
+                        "email": shared.get("email", ""),
+                        "api_token": shared.get("api_token", ""),
+                        "auth_type": "basic",
+                    }
+                    chat_tweaks[CHAT_COMPONENT_ID_JIRA] = jira_creds
+                    chat_tweaks[CHAT_COMPONENT_ID_JIRA_READER_WRITER] = jira_creds
+
+            # Use thread_ts as session_id so threaded replies share context
+            session_id = f"slack-chat-{thread_ts}"
+
+            # Show a thinking indicator
+            thinking_msg = await client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=":hourglass_flowing_sand: Thinking…",
+            )
+
+            try:
+                reply = await self.langbuilder.run_chat(
+                    flow_id=self.settings.langbuilder_chat_flow_id,
+                    chat_input_id=self.settings.langbuilder_chat_input_id,
+                    session_id=session_id,
+                    message=clean_text,
+                    extra_tweaks=chat_tweaks,
+                )
+
+                # Replace the thinking message with the actual reply
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=thinking_msg["ts"],
+                    text=reply,
+                )
+            except Exception as e:
+                logger.exception("Chat flow error for user %s", user_id)
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=thinking_msg["ts"],
+                    text=f"Sorry, something went wrong: {str(e)[:200]}",
+                )
 
         # ==========================================
         # SLASH COMMAND HANDLERS
@@ -307,19 +401,153 @@ class SlackHandler:
                     user=user_id,
                     text=(
                         "*Available commands:*\n\n"
-                        "*/jira-agent setup*\nConfigure your JIRA & GDrive credentials\n\n"
-                        "*/jira-agent config*\nView your current configuration\n\n"
-                        "*/jira-agent update jira*\nUpdate JIRA credentials\n\n"
-                        "*/jira-agent update gdrive*\nUpdate Google Drive folder\n\n"
-                        "*/jira-agent check-transcripts*\nManually check for new transcripts\n\n"
-                        "*/jira-agent schedule*\nConfigure recurring sync schedule\n\n"
+                        "*/jira-setup*\nConfigure your JIRA & GDrive credentials\n\n"
+                        "*/jira-config*\nView your current configuration\n\n"
+                        "*/jira-update* `jira` or `gdrive`\nUpdate JIRA or GDrive credentials\n\n"
+                        "*/jira-schedule*\nConfigure recurring sync schedule\n\n"
+                        "*/jira-transcripts*\nManually check for new transcripts\n\n"
+                        "*/jira-admin* `list|disable|enable|stats|audit`\nAdmin: manage PMs, stats, audit"
+                    ),
+                )
+
+        # ==========================================
+        # DEDICATED SLASH COMMANDS
+        # ==========================================
+
+        @self.app.command("/jira-setup")
+        async def handle_jira_setup(ack, command: dict, client: AsyncWebClient) -> None:
+            """Handle /jira-setup – open PM onboarding modal."""
+            await ack()
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+            trigger_id = command["trigger_id"]
+
+            if not self.dynamodb:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="DynamoDB is not configured. PM management is unavailable.",
+                )
+                return
+            await self._open_setup_modal(client, trigger_id, user_id)
+
+        @self.app.command("/jira-config")
+        async def handle_jira_config(ack, command: dict, client: AsyncWebClient) -> None:
+            """Handle /jira-config – show current PM configuration."""
+            await ack()
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+
+            if not self.dynamodb:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="DynamoDB is not configured. PM management is unavailable.",
+                )
+                return
+            await self._show_config(client, channel_id, user_id)
+
+        @self.app.command("/jira-update")
+        async def handle_jira_update(ack, command: dict, client: AsyncWebClient) -> None:
+            """Handle /jira-update jira|gdrive – update credentials."""
+            await ack()
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+            trigger_id = command["trigger_id"]
+            text = (command.get("text") or "").strip().lower()
+
+            if not self.dynamodb:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="DynamoDB is not configured. PM management is unavailable.",
+                )
+                return
+
+            if text == "jira":
+                await self._open_update_jira_modal(client, trigger_id, user_id)
+            elif text == "gdrive":
+                await self._open_update_gdrive_modal(client, trigger_id, user_id)
+            else:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="Usage: `/jira-update jira` or `/jira-update gdrive`",
+                )
+
+        @self.app.command("/jira-schedule")
+        async def handle_jira_schedule(ack, command: dict, client: AsyncWebClient) -> None:
+            """Handle /jira-schedule – open schedule configuration modal."""
+            await ack()
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+            trigger_id = command["trigger_id"]
+
+            if not self.dynamodb:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="DynamoDB is not configured. PM management is unavailable.",
+                )
+                return
+            await self._open_schedule_modal(client, trigger_id, user_id)
+
+        @self.app.command("/jira-transcripts")
+        async def handle_jira_transcripts(ack, command: dict, client: AsyncWebClient) -> None:
+            """Handle /jira-transcripts – manually check for new transcripts."""
+            await ack()
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+
+            if not self.dynamodb:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="DynamoDB is not configured. PM management is unavailable.",
+                )
+                return
+            await self._manual_check_transcripts(client, channel_id, user_id)
+
+        @self.app.command("/jira-admin")
+        async def handle_jira_admin(ack, command: dict, client: AsyncWebClient) -> None:
+            """Handle /jira-admin – admin PM management commands."""
+            await ack()
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+            text = (command.get("text") or "").strip().lower()
+
+            if not self.dynamodb:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="DynamoDB is not configured. PM management is unavailable.",
+                )
+                return
+
+            if not self.settings.is_admin(user_id):
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text="You don't have admin permissions.",
+                )
+                return
+
+            if text == "list":
+                await self._admin_list_pms(client, channel_id, user_id)
+            elif text.startswith("disable "):
+                target_id = text.replace("disable ", "", 1).strip()
+                await self._admin_disable_pm(client, channel_id, user_id, target_id)
+            elif text.startswith("enable "):
+                target_id = text.replace("enable ", "", 1).strip()
+                await self._admin_enable_pm(client, channel_id, user_id, target_id)
+            elif text == "stats":
+                await self._admin_stats(client, channel_id, user_id)
+            elif text.startswith("audit"):
+                audit_session = text.replace("audit", "", 1).strip()
+                await self._admin_audit_log(client, channel_id, user_id, audit_session or None)
+            else:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text=(
                         "*Admin commands:*\n\n"
-                        "*/jira-agent admin list*\nList all PMs\n\n"
-                        "*/jira-agent admin disable* _<slack_id>_\nDisable a PM\n\n"
-                        "*/jira-agent admin enable* _<slack_id>_\nEnable a PM\n\n"
-                        "*/jira-agent admin stats*\nUsage statistics\n\n"
-                        "*/jira-agent admin audit*\nView full audit log\n\n"
-                        "*/jira-agent admin audit* _<session_uuid>_\nView audit log for a specific session"
+                        "*/jira-admin list*\nList all PMs\n\n"
+                        "*/jira-admin disable* _<slack_id>_\nDisable a PM\n\n"
+                        "*/jira-admin enable* _<slack_id>_\nEnable a PM\n\n"
+                        "*/jira-admin stats*\nUsage statistics\n\n"
+                        "*/jira-admin audit*\nView full audit log\n\n"
+                        "*/jira-admin audit* _<session_uuid>_\nAudit log for a specific session"
                     ),
                 )
 
