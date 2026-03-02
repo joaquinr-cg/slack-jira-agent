@@ -16,3 +16,7 @@ pydantic-settings>=2.0.0
 
 # Scheduling
 croniter>=1.3.0
+
+# File extraction (for @mention file uploads)
+PyPDF2>=3.0.0
+python-docx>=1.0.0
