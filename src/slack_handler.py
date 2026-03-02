@@ -304,7 +304,7 @@ class SlackHandler:
                         "`/jira-agent setup` - Configure your JIRA & GDrive credentials\n"
                         "`/jira-agent config` - View your current configuration\n"
                         "`/jira-agent update jira` - Update JIRA credentials\n"
-                        "`/jira-agent update gdrive` - Update Google Drive settings\n"
+                        "`/jira-agent update gdrive` - Update Google Drive folder\n"
                         "`/jira-agent check-transcripts` - Manually check for new transcripts\n"
                         "`/jira-agent schedule` - Configure recurring sync schedule\n"
                         "`/jira-agent admin list` - List all PMs (admin)\n"
@@ -342,7 +342,6 @@ class SlackHandler:
                     if existing_config:
                         existing_secrets = {
                             "existing_jira_token": existing_config.get("jira_config", {}).get("api_token", ""),
-                            "existing_gdrive_key": existing_config.get("gdrive_config", {}).get("private_key", ""),
                         }
 
                 # Handle JIRA token (may be absent when using shared service account)
@@ -359,11 +358,6 @@ class SlackHandler:
                     jira_url = values["jira_url_block"]["jira_url_input"]["value"]
                     jira_email = values["jira_email_block"]["jira_email_input"]["value"]
 
-                gdrive_key = (
-                    values["gdrive_key_block"]["gdrive_key_input"]["value"]
-                    or existing_secrets.get("existing_gdrive_key", "")
-                )
-
                 pm_data = {
                     "slack_id": user_id,
                     "name": values["name_block"]["name_input"]["value"],
@@ -376,14 +370,8 @@ class SlackHandler:
                         "auth_type": "basic",
                     },
                     "gdrive_config": {
-                        "project_id": (values["gdrive_project_block"]["gdrive_project_input"]["value"] or ""),
-                        "client_email": (values["gdrive_email_block"]["gdrive_email_input"]["value"] or ""),
-                        "private_key": (gdrive_key or ""),
                         "folder_id": (values["gdrive_folder_block"]["gdrive_folder_input"]["value"] or ""),
                         "folder_name": (values["gdrive_folder_name_block"]["gdrive_folder_name_input"]["value"] or ""),
-                        "private_key_id": "",
-                        "client_id": "",
-                        "file_filter": "",
                     },
                     "flow_config": {
                         "transcripts_only": False,
@@ -448,16 +436,10 @@ class SlackHandler:
                 current = await self.dynamodb.get_pm_config(user_id)
                 current_gdrive = current.get("gdrive_config", {}) if current else {}
 
-                new_key = values["gdrive_key_block"]["gdrive_key_input"]["value"]
                 gdrive_config = {
-                    "project_id": values["gdrive_project_block"]["gdrive_project_input"]["value"],
-                    "client_email": values["gdrive_email_block"]["gdrive_email_input"]["value"],
-                    "private_key": new_key if new_key else current_gdrive.get("private_key", ""),
+                    **current_gdrive,
                     "folder_id": values["gdrive_folder_block"]["gdrive_folder_input"]["value"],
                     "folder_name": (values["gdrive_folder_name_block"]["gdrive_folder_name_input"]["value"] or ""),
-                    "private_key_id": current_gdrive.get("private_key_id", ""),
-                    "client_id": current_gdrive.get("client_id", ""),
-                    "file_filter": current_gdrive.get("file_filter", ""),
                 }
                 await self.dynamodb.update_pm(user_id, {"gdrive_config": gdrive_config})
 
@@ -1882,37 +1864,7 @@ class SlackHandler:
                 "label": {"type": "plain_text", "text": "JIRA Project Keys (comma-separated)"},
             },
             {"type": "divider"},
-            {"type": "header", "text": {"type": "plain_text", "text": "Google Drive Configuration"}},
-            {
-                "type": "input", "block_id": "gdrive_project_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "gdrive_project_input",
-                    "placeholder": {"type": "plain_text", "text": "Leave empty to use shared default"},
-                    **({"initial_value": existing["gdrive_config"]["project_id"]} if existing and existing.get("gdrive_config", {}).get("project_id") else {}),
-                },
-                "label": {"type": "plain_text", "text": "GCP Project ID (optional, shared default)"},
-                "optional": True,
-            },
-            {
-                "type": "input", "block_id": "gdrive_email_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "gdrive_email_input",
-                    "placeholder": {"type": "plain_text", "text": "Leave empty to use shared default"},
-                    **({"initial_value": existing["gdrive_config"]["client_email"]} if existing and existing.get("gdrive_config", {}).get("client_email") else {}),
-                },
-                "label": {"type": "plain_text", "text": "Service Account Email (optional, shared default)"},
-                "optional": True,
-            },
-            {
-                "type": "input", "block_id": "gdrive_key_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "gdrive_key_input",
-                    "multiline": True,
-                    "placeholder": {"type": "plain_text", "text": "Leave empty to use shared default"},
-                },
-                "label": {"type": "plain_text", "text": "Service Account Private Key (optional, shared default)"},
-                "optional": True,
-            },
+            {"type": "header", "text": {"type": "plain_text", "text": "Google Drive"}},
             {
                 "type": "input", "block_id": "gdrive_folder_block",
                 "element": {
@@ -2022,32 +1974,6 @@ class SlackHandler:
 
         blocks = [
             {
-                "type": "input", "block_id": "gdrive_project_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "gdrive_project_input",
-                    **({"initial_value": gdrive["project_id"]} if gdrive.get("project_id") else {}),
-                },
-                "label": {"type": "plain_text", "text": "GCP Project ID"},
-            },
-            {
-                "type": "input", "block_id": "gdrive_email_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "gdrive_email_input",
-                    **({"initial_value": gdrive["client_email"]} if gdrive.get("client_email") else {}),
-                },
-                "label": {"type": "plain_text", "text": "Service Account Email"},
-            },
-            {
-                "type": "input", "block_id": "gdrive_key_block",
-                "element": {
-                    "type": "plain_text_input", "action_id": "gdrive_key_input",
-                    "multiline": True,
-                    "placeholder": {"type": "plain_text", "text": "Leave empty to keep current key"},
-                },
-                "label": {"type": "plain_text", "text": "Service Account Private Key"},
-                "optional": True,
-            },
-            {
                 "type": "input", "block_id": "gdrive_folder_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "gdrive_folder_input",
@@ -2103,7 +2029,6 @@ class SlackHandler:
 
         # Mask sensitive values
         token_masked = (jira.get("api_token", "")[:8] + "...") if jira.get("api_token") else "Not set"
-        key_masked = "Configured" if gdrive.get("private_key") else "Not set"
 
         text = (
             f"*Your JIRA Agent Configuration*\n\n"
@@ -2116,9 +2041,6 @@ class SlackHandler:
             f"  API Token: `{token_masked}`\n"
             f"  Projects: `{', '.join(jira.get('project_keys', [jira.get('project_key', 'N/A')]))}`\n\n"
             f"*Google Drive:*\n"
-            f"  Project ID: `{gdrive.get('project_id', 'N/A')}`\n"
-            f"  Service Account: `{gdrive.get('client_email', 'N/A')}`\n"
-            f"  Private Key: `{key_masked}`\n"
             f"  Folder ID: `{gdrive.get('folder_id', 'N/A')}`\n"
             f"  Folder Name: `{gdrive.get('folder_name', 'N/A')}`\n\n"
             f"*Flow Config:*\n"
