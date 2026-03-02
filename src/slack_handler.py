@@ -182,15 +182,34 @@ class SlackHandler:
                 logger.info("Slack file objects: %s", json.dumps(files, indent=2, default=str))
                 file_texts = []
                 for f in files:
-                    url = f.get("url_private_download") or f.get("url_private", "")
+                    file_id = f.get("id", "")
                     name = f.get("name", "unknown")
                     mime = f.get("mimetype", "application/octet-stream")
+                    url = f.get("url_private_download") or f.get("url_private", "")
+
                     if not url:
                         file_texts.append(f"[Attached file: {name} — no download URL]")
                         continue
+
                     try:
-                        # Use urllib with a custom redirect handler that
-                        # preserves the Authorization header on every hop.
+                        # First, verify we can access the file via the Slack API
+                        # (this confirms the bot has files:read scope).
+                        try:
+                            file_info = await client.files_info(file=file_id)
+                            logger.info("files.info OK for %s (id=%s)", name, file_id)
+                            # Use the URL from the API response (freshest)
+                            url = (
+                                file_info["file"].get("url_private_download")
+                                or file_info["file"].get("url_private", url)
+                            )
+                        except Exception as api_err:
+                            logger.error(
+                                "files.info FAILED for %s: %s — bot may be missing files:read scope",
+                                name, str(api_err),
+                            )
+
+                        # Download using urllib with auth header preserved
+                        # through redirects.
                         def _download(dl_url: str, token: str) -> bytes:
                             class _AuthRedirectHandler(urllib.request.HTTPRedirectHandler):
                                 def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -213,6 +232,19 @@ class SlackHandler:
                             _download, url, self.settings.slack_bot_token,
                         )
                         logger.info("Downloaded file %s: %d bytes (first 20: %s)", name, len(raw), raw[:20])
+
+                        if raw[:15] == b'<!DOCTYPE html>':
+                            logger.error(
+                                "Downloaded HTML instead of file bytes for %s. "
+                                "Bot likely needs 'files:read' OAuth scope in Slack app settings.",
+                                name,
+                            )
+                            file_texts.append(
+                                f"[Attached file: {name} — download failed: bot missing 'files:read' scope. "
+                                f"Add it at api.slack.com → OAuth & Permissions → Bot Token Scopes]"
+                            )
+                            continue
+
                         extracted = extract_text_from_bytes(raw, mime, name)
                         file_texts.append(f"--- File: {name} ---\n{extracted}")
                     except Exception as e:
