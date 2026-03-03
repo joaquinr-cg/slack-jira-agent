@@ -1105,12 +1105,8 @@ class SlackHandler:
         slack_messages = []
 
         for msg in marked_messages:
-            # If we already have the text, use it
-            if msg.message_text:
-                slack_messages.append({"text": msg.message_text})
-                continue
-
-            # Fetch from Slack
+            # Always fetch from Slack to pick up file attachments
+            # (the cached message_text from the DB is text-only).
             try:
                 # If it's a thread, get all messages in thread
                 if msg.thread_ts:
