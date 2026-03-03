@@ -2,28 +2,19 @@
 
 import io
 import logging
+import urllib.request
 from typing import Optional
-
-import httpx
 
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
-class _SlackBearerAuth(httpx.Auth):
-    """Bearer auth that persists through Slack's cross-origin redirects."""
-
-    def __init__(self, token: str):
-        self.token = token
-
-    def auth_flow(self, request):
-        request.headers["Authorization"] = f"Bearer {self.token}"
-        yield request
-
-
 def download_slack_file(url_private: str, bot_token: str) -> bytes:
     """Download a file from Slack using the bot token for auth.
+
+    Uses a custom redirect handler that preserves the Authorization
+    header through cross-origin redirects (standard HTTP clients strip it).
 
     Args:
         url_private: The url_private field from the Slack file object.
@@ -33,16 +24,30 @@ def download_slack_file(url_private: str, bot_token: str) -> bytes:
         The raw file bytes.
 
     Raises:
-        httpx.HTTPStatusError: If the download fails.
+        urllib.error.URLError: If the download fails.
+        ValueError: If the response is HTML instead of file bytes.
     """
-    response = httpx.get(
-        url_private,
-        auth=_SlackBearerAuth(bot_token),
-        follow_redirects=True,
-        timeout=30.0,
-    )
-    response.raise_for_status()
-    return response.content
+    class _AuthRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new_req is not None:
+                new_req.add_unredirected_header(
+                    "Authorization", f"Bearer {bot_token}",
+                )
+            return new_req
+
+    opener = urllib.request.build_opener(_AuthRedirectHandler)
+    req = urllib.request.Request(url_private)
+    req.add_header("Authorization", f"Bearer {bot_token}")
+    with opener.open(req, timeout=30) as resp:
+        data = resp.read()
+
+    if data[:15] == b"<!DOCTYPE html>":
+        raise ValueError(
+            "Received HTML instead of file bytes. "
+            "Bot may be missing 'files:read' OAuth scope."
+        )
+    return data
 
 
 def extract_text_from_bytes(file_bytes: bytes, mimetype: str, filename: str) -> str:
@@ -131,10 +136,13 @@ def _extract_text(file_bytes: bytes, filename: str) -> str:
             return f"[Text file: {filename} - decoding failed]"
 
 
-async def extract_text_from_slack_file(
+def extract_text_from_slack_file(
     file_info: dict, bot_token: str
 ) -> Optional[dict]:
     """Download a Slack file and extract its text content.
+
+    This is a synchronous function. Call via ``asyncio.to_thread()``
+    from async code to avoid blocking the event loop.
 
     Args:
         file_info: A file object from the Slack message ``files[]`` array.

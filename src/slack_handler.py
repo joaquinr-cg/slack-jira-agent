@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import re
-import urllib.request
 from typing import Optional, Set
 
 from slack_bolt.async_app import AsyncApp
@@ -12,7 +11,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from .config import Settings
 from .cron_helper import natural_language_to_cron
-from .file_extractor import extract_text_from_bytes
+from .file_extractor import extract_text_from_slack_file
 from .db import (
     AuditEntry,
     AuditEventType,
@@ -179,80 +178,9 @@ class SlackHandler:
             # Download uploaded files, extract text, and append to message
             files = event.get("files", [])
             if files:
-                logger.info("Slack file objects: %s", json.dumps(files, indent=2, default=str))
-                file_texts = []
-                for f in files:
-                    file_id = f.get("id", "")
-                    name = f.get("name", "unknown")
-                    mime = f.get("mimetype", "application/octet-stream")
-                    url = f.get("url_private_download") or f.get("url_private", "")
-
-                    if not url:
-                        file_texts.append(f"[Attached file: {name} — no download URL]")
-                        continue
-
-                    try:
-                        # First, verify we can access the file via the Slack API
-                        # (this confirms the bot has files:read scope).
-                        try:
-                            file_info = await client.files_info(file=file_id)
-                            logger.info("files.info OK for %s (id=%s)", name, file_id)
-                            # Use the URL from the API response (freshest)
-                            url = (
-                                file_info["file"].get("url_private_download")
-                                or file_info["file"].get("url_private", url)
-                            )
-                        except Exception as api_err:
-                            logger.error(
-                                "files.info FAILED for %s: %s — bot may be missing files:read scope",
-                                name, str(api_err),
-                            )
-
-                        # Download using urllib with auth header preserved
-                        # through redirects.
-                        def _download(dl_url: str, token: str) -> bytes:
-                            class _AuthRedirectHandler(urllib.request.HTTPRedirectHandler):
-                                def redirect_request(self, req, fp, code, msg, headers, newurl):
-                                    new_req = super().redirect_request(
-                                        req, fp, code, msg, headers, newurl,
-                                    )
-                                    if new_req is not None:
-                                        new_req.add_unredirected_header(
-                                            "Authorization", f"Bearer {token}",
-                                        )
-                                    return new_req
-
-                            opener = urllib.request.build_opener(_AuthRedirectHandler)
-                            req = urllib.request.Request(dl_url)
-                            req.add_header("Authorization", f"Bearer {token}")
-                            with opener.open(req, timeout=30) as resp:
-                                return resp.read()
-
-                        raw = await asyncio.to_thread(
-                            _download, url, self.settings.slack_bot_token,
-                        )
-                        logger.info("Downloaded file %s: %d bytes (first 20: %s)", name, len(raw), raw[:20])
-
-                        if raw[:15] == b'<!DOCTYPE html>':
-                            logger.error(
-                                "Downloaded HTML instead of file bytes for %s. "
-                                "Bot likely needs 'files:read' OAuth scope in Slack app settings.",
-                                name,
-                            )
-                            file_texts.append(
-                                f"[Attached file: {name} — download failed: bot missing 'files:read' scope. "
-                                f"Add it at api.slack.com → OAuth & Permissions → Bot Token Scopes]"
-                            )
-                            continue
-
-                        extracted = extract_text_from_bytes(raw, mime, name)
-                        file_texts.append(f"--- File: {name} ---\n{extracted}")
-                    except Exception as e:
-                        logger.error("Error downloading file %s: %s", name, str(e))
-                        file_texts.append(f"[Attached file: {name} — error: {str(e)[:100]}]")
-
-                file_block = "\n\n".join(file_texts)
-                clean_text = f"{clean_text}\n\n{file_block}" if clean_text else file_block
+                file_block = await self._extract_files_text(files)
+                if file_block:
+                    clean_text = f"{clean_text}\n\n{file_block}" if clean_text else file_block
 
             if not clean_text:
                 await client.chat_postMessage(
@@ -1144,6 +1072,26 @@ class SlackHandler:
                 metadata={"error": str(e)},
             ))
 
+    async def _extract_files_text(self, files: list[dict]) -> str:
+        """Download and extract text from Slack file attachments.
+
+        Args:
+            files: List of Slack file objects from a message.
+
+        Returns:
+            Extracted text block, or empty string if no files processed.
+        """
+        file_texts = []
+        for f in files:
+            result = await asyncio.to_thread(
+                extract_text_from_slack_file, f, self.settings.slack_bot_token,
+            )
+            if result:
+                file_texts.append(
+                    f"--- File: {result['filename']} ---\n{result['extracted_text']}"
+                )
+        return "\n\n".join(file_texts)
+
     async def _fetch_message_contents(
         self,
         marked_messages: list[MarkedMessage],
@@ -1174,6 +1122,14 @@ class SlackHandler:
                     thread_text = "\n---\n".join(
                         [m.get("text", "") for m in messages]
                     )
+                    # Extract files from all thread messages
+                    all_files = []
+                    for m in messages:
+                        all_files.extend(m.get("files", []))
+                    if all_files:
+                        file_block = await self._extract_files_text(all_files)
+                        if file_block:
+                            thread_text = f"{thread_text}\n\n{file_block}"
                     slack_messages.append({"text": thread_text})
                 else:
                     # Single message
@@ -1185,7 +1141,14 @@ class SlackHandler:
                     )
                     messages = result.get("messages", [])
                     if messages:
-                        slack_messages.append({"text": messages[0].get("text", "")})
+                        text = messages[0].get("text", "")
+                        # Extract files from the message
+                        msg_files = messages[0].get("files", [])
+                        if msg_files:
+                            file_block = await self._extract_files_text(msg_files)
+                            if file_block:
+                                text = f"{text}\n\n{file_block}"
+                        slack_messages.append({"text": text})
 
             except Exception as e:
                 logger.error(
