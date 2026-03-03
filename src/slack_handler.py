@@ -97,17 +97,24 @@ class SlackHandler:
                 user_id,
             )
 
-            # Fetch the message content
+            # Fetch the message content using conversations_replies which
+            # works for channel messages, thread parents, AND thread replies
+            # (conversations_history only returns channel-level messages).
             try:
-                result = await client.conversations_history(
+                result = await client.conversations_replies(
                     channel=channel_id,
-                    latest=message_ts,
+                    ts=message_ts,
                     inclusive=True,
                     limit=1,
                 )
                 messages = result.get("messages", [])
-                message_text = messages[0].get("text", "") if messages else None
-                thread_ts = messages[0].get("thread_ts") if messages else None
+                # Find the exact message we're looking for
+                target = next(
+                    (m for m in messages if m.get("ts") == message_ts),
+                    messages[0] if messages else None,
+                )
+                message_text = target.get("text", "") if target else None
+                thread_ts = target.get("thread_ts") if target else None
 
             except Exception as e:
                 logger.error("Failed to fetch message content: %s", str(e))
@@ -1105,46 +1112,34 @@ class SlackHandler:
         slack_messages = []
 
         for msg in marked_messages:
-            # Always fetch from Slack to pick up file attachments
-            # (the cached message_text from the DB is text-only).
+            # Always fetch from Slack to pick up file attachments.
+            # Use conversations_replies which works for channel messages,
+            # thread parents, AND thread replies (conversations_history
+            # only returns channel-level messages and misses thread replies).
             try:
-                # If it's a thread, get all messages in thread
-                if msg.thread_ts:
-                    result = await client.conversations_replies(
-                        channel=msg.channel_id,
-                        ts=msg.thread_ts,
-                    )
-                    messages = result.get("messages", [])
-                    thread_text = "\n---\n".join(
-                        [m.get("text", "") for m in messages]
-                    )
-                    # Extract files from all thread messages
-                    all_files = []
-                    for m in messages:
-                        all_files.extend(m.get("files", []))
-                    if all_files:
-                        file_block = await self._extract_files_text(all_files)
-                        if file_block:
-                            thread_text = f"{thread_text}\n\n{file_block}"
-                    slack_messages.append({"text": thread_text})
-                else:
-                    # Single message
-                    result = await client.conversations_history(
-                        channel=msg.channel_id,
-                        latest=msg.message_ts,
-                        inclusive=True,
-                        limit=1,
-                    )
-                    messages = result.get("messages", [])
-                    if messages:
-                        text = messages[0].get("text", "")
-                        # Extract files from the message
-                        msg_files = messages[0].get("files", [])
-                        if msg_files:
-                            file_block = await self._extract_files_text(msg_files)
-                            if file_block:
-                                text = f"{text}\n\n{file_block}"
-                        slack_messages.append({"text": text})
+                result = await client.conversations_replies(
+                    channel=msg.channel_id,
+                    ts=msg.message_ts,
+                )
+                messages = result.get("messages", [])
+                if not messages:
+                    continue
+
+                # Find the specific marked message
+                target = next(
+                    (m for m in messages if m.get("ts") == msg.message_ts),
+                    messages[0],
+                )
+                text = target.get("text", "")
+
+                # Extract files from the marked message
+                msg_files = target.get("files", [])
+                if msg_files:
+                    file_block = await self._extract_files_text(msg_files)
+                    if file_block:
+                        text = f"{text}\n\n{file_block}"
+
+                slack_messages.append({"text": text})
 
             except Exception as e:
                 logger.error(
