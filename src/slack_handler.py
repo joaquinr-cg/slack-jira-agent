@@ -599,9 +599,14 @@ class SlackHandler:
                 # Handle JIRA token (may be absent when using shared service account)
                 shared_jira_configured = bool(self.settings.jira_shared_api_token)
                 if shared_jira_configured:
-                    jira_token = ""
-                    jira_url = ""
-                    jira_email = ""
+                    # Optional override fields — use them if provided, else empty (shared account)
+                    jira_token = (
+                        values.get("jira_token_block", {}).get("jira_token_input", {}).get("value", "")
+                        or existing_secrets.get("existing_jira_token", "")
+                        or ""
+                    )
+                    jira_url = values.get("jira_url_block", {}).get("jira_url_input", {}).get("value", "") or ""
+                    jira_email = values.get("jira_email_block", {}).get("jira_email_input", {}).get("value", "") or ""
                 else:
                     jira_token = (
                         values["jira_token_block"]["jira_token_input"]["value"]
@@ -2102,11 +2107,42 @@ class SlackHandler:
         ]
 
         if shared_jira_configured:
-            # Shared service token — PM only needs project keys
+            # Shared service token — PM only needs project keys, but can optionally override
             blocks.append({
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": "_Using shared JIRA service account. You only need to provide your project key(s)._"}],
+                "elements": [{"type": "mrkdwn", "text": "_Using shared JIRA service account. You only need to provide your project key(s). Optionally, provide your own JIRA credentials below to override the shared account._"}],
             })
+            blocks.extend([
+                {
+                    "type": "input", "block_id": "jira_url_block",
+                    "element": {
+                        "type": "plain_text_input", "action_id": "jira_url_input",
+                        "placeholder": {"type": "plain_text", "text": "https://company.atlassian.net"},
+                        **({"initial_value": existing["jira_config"]["jira_url"]} if existing and existing.get("jira_config", {}).get("jira_url") else {}),
+                    },
+                    "label": {"type": "plain_text", "text": "JIRA URL (optional override)"},
+                    "optional": True,
+                },
+                {
+                    "type": "input", "block_id": "jira_email_block",
+                    "element": {
+                        "type": "plain_text_input", "action_id": "jira_email_input",
+                        "placeholder": {"type": "plain_text", "text": "you@company.com"},
+                        **({"initial_value": existing["jira_config"]["email"]} if existing and existing.get("jira_config", {}).get("email") else {}),
+                    },
+                    "label": {"type": "plain_text", "text": "JIRA Email (optional override)"},
+                    "optional": True,
+                },
+                {
+                    "type": "input", "block_id": "jira_token_block",
+                    "element": {
+                        "type": "plain_text_input", "action_id": "jira_token_input",
+                        "placeholder": {"type": "plain_text", "text": "ATATT3x... (leave empty to use shared account)"},
+                    },
+                    "label": {"type": "plain_text", "text": "JIRA API Token (optional override)"},
+                    "optional": True,
+                },
+            ])
         else:
             # Individual JIRA credentials
             blocks.extend([
