@@ -2181,7 +2181,7 @@ class SlackHandler:
                 "element": {
                     "type": "plain_text_input", "action_id": "jira_project_input",
                     "placeholder": {"type": "plain_text", "text": "LAN, PROJ2, INFRA"},
-                    **({"initial_value": ",".join(existing["jira_config"].get("project_keys", [existing["jira_config"].get("project_key", "")]))} if existing and existing.get("jira_config", {}).get("project_key") else {}),
+                    **({"initial_value": ",".join(existing["jira_config"].get("project_keys", []) or [existing["jira_config"].get("project_key", "")])} if existing and (existing.get("jira_config", {}).get("project_keys") or existing.get("jira_config", {}).get("project_key")) else {}),
                 },
                 "label": {"type": "plain_text", "text": "JIRA Project Keys (comma-separated)"},
             },
@@ -2551,7 +2551,7 @@ class SlackHandler:
             last_processed = last.get("processed_at", "Never") if last.get("processed_at") else "Never"
             lines.append(
                 f"  <@{pm['slack_id']}> | {pm.get('name', 'N/A')} | "
-                f"`{enabled_icon}` | Project: `{pm.get('jira_config', {}).get('project_key', 'N/A')}` | "
+                f"`{enabled_icon}` | Project: `{','.join(pm.get('jira_config', {}).get('project_keys', [])) or pm.get('jira_config', {}).get('project_key', 'N/A')}` | "
                 f"Last sync: `{last_processed}`"
             )
 
