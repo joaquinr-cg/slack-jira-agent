@@ -38,6 +38,22 @@ from .langbuilder_client import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_gdrive_folder_id(value: str) -> str:
+    """Extract a Google Drive folder ID from a URL or raw ID string.
+
+    Accepts:
+      - https://drive.google.com/drive/folders/1AbC_xYz123
+      - https://drive.google.com/drive/u/0/folders/1AbC_xYz123?resourcekey=...
+      - 1AbC_xYz123  (raw ID)
+    """
+    value = (value or "").strip()
+    if "/folders/" in value:
+        # Take the segment after /folders/ and strip query params
+        folder_part = value.split("/folders/", 1)[1]
+        return folder_part.split("?")[0].split("#")[0].strip("/")
+    return value
+
+
 def _build_chat_jira_tweaks(jira_creds: dict) -> dict[str, dict]:
     """Build chat-flow Jira tweaks.
 
@@ -643,7 +659,7 @@ class SlackHandler:
                         "auth_type": "basic",
                     },
                     "gdrive_config": {
-                        "folder_id": (values["gdrive_folder_block"]["gdrive_folder_input"]["value"] or ""),
+                        "folder_id": _extract_gdrive_folder_id(values["gdrive_folder_block"]["gdrive_folder_input"]["value"] or ""),
                         "folder_name": (values["gdrive_folder_name_block"]["gdrive_folder_name_input"]["value"] or ""),
                     },
                     "flow_config": {
@@ -716,7 +732,7 @@ class SlackHandler:
 
                 gdrive_config = {
                     **current_gdrive,
-                    "folder_id": values["gdrive_folder_block"]["gdrive_folder_input"]["value"],
+                    "folder_id": _extract_gdrive_folder_id(values["gdrive_folder_block"]["gdrive_folder_input"]["value"]),
                     "folder_name": (values["gdrive_folder_name_block"]["gdrive_folder_name_input"]["value"] or ""),
                 }
                 await self.dynamodb.update_pm(user_id, {"gdrive_config": gdrive_config})
@@ -2220,13 +2236,20 @@ class SlackHandler:
             {"type": "divider"},
             {"type": "header", "text": {"type": "plain_text", "text": "Google Drive"}},
             {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "Open Google Drive \u2192 My Drive \u2192 *Meet Recordings* folder, then copy the URL from your browser's address bar and paste it below.",
+                },
+            },
+            {
                 "type": "input", "block_id": "gdrive_folder_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "gdrive_folder_input",
-                    "placeholder": {"type": "plain_text", "text": "1ABC123xyz"},
+                    "placeholder": {"type": "plain_text", "text": "https://drive.google.com/drive/folders/1ABC... or just the ID"},
                     **({"initial_value": existing["gdrive_config"]["folder_id"]} if existing and existing.get("gdrive_config", {}).get("folder_id") else {}),
                 },
-                "label": {"type": "plain_text", "text": "Google Drive Folder ID"},
+                "label": {"type": "plain_text", "text": "Google Drive Folder (link or ID)"},
             },
             {
                 "type": "input", "block_id": "gdrive_folder_name_block",
@@ -2351,12 +2374,20 @@ class SlackHandler:
 
         blocks = [
             {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "Open Google Drive \u2192 My Drive \u2192 *Meet Recordings* folder, then copy the URL from your browser's address bar and paste it below.",
+                },
+            },
+            {
                 "type": "input", "block_id": "gdrive_folder_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "gdrive_folder_input",
+                    "placeholder": {"type": "plain_text", "text": "https://drive.google.com/drive/folders/1ABC... or just the ID"},
                     **({"initial_value": gdrive["folder_id"]} if gdrive.get("folder_id") else {}),
                 },
-                "label": {"type": "plain_text", "text": "Google Drive Folder ID"},
+                "label": {"type": "plain_text", "text": "Google Drive Folder (link or ID)"},
             },
             {
                 "type": "input", "block_id": "gdrive_folder_name_block",
