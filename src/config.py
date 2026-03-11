@@ -75,6 +75,22 @@ class Settings(BaseSettings):
     trigger_auto_sync: bool = True  # Auto-trigger jira-sync when new transcripts found
 
     # ==========================================
+    # LANGBUILDER COMPONENT INSTANCE IDs
+    # Override these when you republish a flow with new node instances.
+    # ==========================================
+    # Main flow (/jira-sync)
+    lb_main_chat_input_id: str = "ChatInput-6AJBJ"
+    lb_main_gdrive_parser_id: str = "GoogleDriveDocsParserSA-UWTSm"
+    lb_main_jira_state_fetcher_id: str = "JiraStateFetcher-uGTUl"
+    lb_main_jira_reader_writer_id: str = "JiraReaderWriter-WXT1i"
+    # Chat/@mention flow
+    lb_chat_jira_state_fetcher_id: str = "CustomComponent-sPobw"
+    lb_chat_jira_reader_writer_id: str = "CustomComponent-EanDG"
+    # Trigger flow
+    lb_trigger_transcript_id: str = "TranscriptTrigger-NxiAw"
+    lb_trigger_chat_input_id: str = "ChatInput-jeWM0"
+
+    # ==========================================
     # SHARED JIRA SERVICE ACCOUNT (optional)
     # When set, PMs don't need individual JIRA tokens.
     # PMs still provide their own project key(s).

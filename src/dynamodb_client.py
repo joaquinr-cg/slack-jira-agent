@@ -220,18 +220,22 @@ class DynamoDBClient:
         logger.info("Enabled PM %s", slack_id)
 
 
-# LangBuilder flow component instance IDs (from the deployed jira-tickets flow)
-COMPONENT_ID_GDRIVE_PARSER = "GoogleDriveDocsParserSA-UWTSm"      # GoogleDriveDocsParserSA
-COMPONENT_ID_JIRA_STATE_FETCHER = "JiraStateFetcher-uGTUl"        # JiraStateFetcher (read)
-COMPONENT_ID_JIRA_READER_WRITER = "JiraReaderWriter-WXT1i"        # JiraReaderWriter (read/write)
+def _get_component_ids() -> dict[str, str]:
+    """Get LangBuilder component instance IDs from settings.
 
-# LangBuilder flow component instance IDs (from the deployed chat/mention flow)
-CHAT_COMPONENT_ID_JIRA = "CustomComponent-x44Qr"                  # Jira (basic read)
-CHAT_COMPONENT_ID_JIRA_READER_WRITER = "CustomComponent-YyPny"    # JiraReaderWriter (read/write)
-
-# LangBuilder flow component instance IDs (from the deployed trigger/automatic-parser flow)
-TRIGGER_COMPONENT_ID_TRANSCRIPT = "TranscriptTrigger-NxiAw"
-TRIGGER_CHAT_INPUT_ID = "ChatInput-jeWM0"
+    Returns a dict with keys matching the old constant names for easy migration.
+    """
+    from .config import get_settings
+    s = get_settings()
+    return {
+        "GDRIVE_PARSER": s.lb_main_gdrive_parser_id,
+        "JIRA_STATE_FETCHER": s.lb_main_jira_state_fetcher_id,
+        "JIRA_READER_WRITER": s.lb_main_jira_reader_writer_id,
+        "CHAT_JIRA_STATE_FETCHER": s.lb_chat_jira_state_fetcher_id,
+        "CHAT_JIRA_READER_WRITER": s.lb_chat_jira_reader_writer_id,
+        "TRIGGER_TRANSCRIPT": s.lb_trigger_transcript_id,
+        "TRIGGER_CHAT_INPUT": s.lb_trigger_chat_input_id,
+    }
 
 
 def build_tweaks_from_pm_config(
@@ -258,6 +262,7 @@ def build_tweaks_from_pm_config(
     Returns:
         Tweaks dict keyed by component instance ID.
     """
+    ids = _get_component_ids()
     jira = pm_config.get("jira_config", {})
     pm_gdrive = pm_config.get("gdrive_config", {})
 
@@ -319,8 +324,8 @@ def build_tweaks_from_pm_config(
         jira_tweaks = {}
 
     if jira_tweaks:
-        tweaks[COMPONENT_ID_JIRA_READER_WRITER] = jira_tweaks
-        tweaks[COMPONENT_ID_JIRA_STATE_FETCHER] = jira_tweaks.copy()
+        tweaks[ids["JIRA_READER_WRITER"]] = jira_tweaks
+        tweaks[ids["JIRA_STATE_FETCHER"]] = jira_tweaks.copy()
 
     # Google Drive: shared service account + per-PM overrides for folder_id & client_email
     base_gdrive = default_gdrive or {}
@@ -341,6 +346,6 @@ def build_tweaks_from_pm_config(
     if pm_gdrive.get("client_email"):
         gdrive_tweaks["client_email"] = pm_gdrive["client_email"]
 
-    tweaks[COMPONENT_ID_GDRIVE_PARSER] = gdrive_tweaks
+    tweaks[ids["GDRIVE_PARSER"]] = gdrive_tweaks
 
     return tweaks

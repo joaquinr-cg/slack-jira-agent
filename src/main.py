@@ -80,6 +80,7 @@ async def main() -> None:
         flow_id=settings.langbuilder_flow_id,
         api_key=settings.langbuilder_api_key,
         timeout=settings.request_timeout,
+        chat_input_id=settings.lb_main_chat_input_id,
     )
     logger.info("LangBuilder client initialized (Run API)")
 

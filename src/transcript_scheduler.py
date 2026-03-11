@@ -17,9 +17,8 @@ from typing import Any, Optional
 
 from .config import Settings
 from .dynamodb_client import (
-    TRIGGER_CHAT_INPUT_ID,
-    TRIGGER_COMPONENT_ID_TRANSCRIPT,
     DynamoDBClient,
+    _get_component_ids,
 )
 from .langbuilder_client import LangBuilderClient, LangBuilderError
 
@@ -128,7 +127,8 @@ class TranscriptScheduler:
         if pm_gdrive.get("client_email"):
             gdrive_tweaks["client_email"] = pm_gdrive["client_email"]
 
-        extra_tweaks = {TRIGGER_COMPONENT_ID_TRANSCRIPT: gdrive_tweaks}
+        ids = _get_component_ids()
+        extra_tweaks = {ids["TRIGGER_TRANSCRIPT"]: gdrive_tweaks}
 
         last_processed = pm_config.get("last_processed_transcript", {})
 
@@ -138,7 +138,7 @@ class TranscriptScheduler:
             flow_id=self.settings.trigger_flow_id,
             api_key=self.langbuilder.api_key,
             timeout=self.langbuilder.timeout,
-            chat_input_id=TRIGGER_CHAT_INPUT_ID,
+            chat_input_id=ids["TRIGGER_CHAT_INPUT"],
         )
 
         session_id = str(uuid.uuid4())

@@ -40,9 +40,6 @@ class LangBuilderClient:
     POST /api/v1/run/{flow_id} → full response
     """
 
-    # Default ChatInput component ID (main jira-tickets flow)
-    DEFAULT_CHAT_INPUT_ID = "ChatInput-6AJBJ"
-
     def __init__(
         self,
         flow_url: str,
@@ -51,13 +48,13 @@ class LangBuilderClient:
         timeout: int = 300,
         poll_interval: int = 5,
         max_poll_attempts: int = 60,
-        chat_input_id: Optional[str] = None,
+        chat_input_id: str = "ChatInput-6AJBJ",
     ):
         self.flow_url = flow_url.rstrip("/")
         self.flow_id = flow_id
         self.api_key = api_key
         self.timeout = timeout
-        self.chat_input_id = chat_input_id or self.DEFAULT_CHAT_INPUT_ID
+        self.chat_input_id = chat_input_id
 
     @property
     def run_endpoint(self) -> str:

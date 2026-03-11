@@ -24,11 +24,8 @@ from .db import (
     SessionStatus,
 )
 from .dynamodb_client import (
-    CHAT_COMPONENT_ID_JIRA,
-    CHAT_COMPONENT_ID_JIRA_READER_WRITER,
-    COMPONENT_ID_JIRA_READER_WRITER,
-    COMPONENT_ID_JIRA_STATE_FETCHER,
     DynamoDBClient,
+    _get_component_ids,
     build_tweaks_from_pm_config,
 )
 from .langbuilder_client import (
@@ -44,21 +41,23 @@ logger = logging.getLogger(__name__)
 def _build_chat_jira_tweaks(jira_creds: dict) -> dict[str, dict]:
     """Build chat-flow Jira tweaks.
 
-    The chat flow contains a basic Jira read node plus a JiraReaderWriter node.
-    The basic Jira node only understands `jira_url`, so when a service-account
-    API gateway URL is available we pass it there directly.
+    The chat flow has a JiraStateFetcher and a JiraReaderWriter, both of which
+    accept api_base_url natively, so we pass credentials through unchanged.
     """
     if not jira_creds:
         return {}
 
-    chat_basic_creds = dict(jira_creds)
-    if jira_creds.get("api_base_url"):
-        chat_basic_creds["jira_url"] = jira_creds["api_base_url"]
-
-    return {
-        CHAT_COMPONENT_ID_JIRA: chat_basic_creds,
-        CHAT_COMPONENT_ID_JIRA_READER_WRITER: dict(jira_creds),
+    ids = _get_component_ids()
+    tweaks = {
+        ids["CHAT_JIRA_STATE_FETCHER"]: dict(jira_creds),
+        ids["CHAT_JIRA_READER_WRITER"]: dict(jira_creds),
     }
+    logger.info(
+        "Chat Jira tweaks target components: %s (api_base_url=%s)",
+        list(tweaks.keys()),
+        jira_creds.get("api_base_url", "not set"),
+    )
+    return tweaks
 
 
 class SlackHandler:
@@ -236,7 +235,8 @@ class SlackHandler:
                         shared_jira=self._get_shared_jira_config(),
                     )
                     # Map main-flow component IDs → chat-flow component IDs
-                    jira_creds = full_tweaks.get(COMPONENT_ID_JIRA_READER_WRITER, {})
+                    ids = _get_component_ids()
+                    jira_creds = full_tweaks.get(ids["JIRA_READER_WRITER"], {})
                     if jira_creds:
                         chat_tweaks.update(_build_chat_jira_tweaks(jira_creds))
                 elif self._get_shared_jira_config():
@@ -859,9 +859,10 @@ class SlackHandler:
                 # Still pass shared JIRA creds so components can read/write
                 shared_jira = self._get_shared_jira_config()
                 if shared_jira:
+                    ids = _get_component_ids()
                     extra_tweaks = {
-                        COMPONENT_ID_JIRA_READER_WRITER: {**shared_jira, "auth_type": "basic"},
-                        COMPONENT_ID_JIRA_STATE_FETCHER: {**shared_jira, "auth_type": "basic"},
+                        ids["JIRA_READER_WRITER"]: {**shared_jira, "auth_type": "basic"},
+                        ids["JIRA_STATE_FETCHER"]: {**shared_jira, "auth_type": "basic"},
                     }
 
         # Get unprocessed marked messages (skip if transcripts_only mode)
@@ -1913,9 +1914,10 @@ class SlackHandler:
                     # No PM config — still pass shared JIRA creds for execution
                     shared_jira = self._get_shared_jira_config()
                     if shared_jira:
+                        ids = _get_component_ids()
                         extra_tweaks = {
-                            COMPONENT_ID_JIRA_READER_WRITER: {**shared_jira, "auth_type": "basic"},
-                            COMPONENT_ID_JIRA_STATE_FETCHER: {**shared_jira, "auth_type": "basic"},
+                            ids["JIRA_READER_WRITER"]: {**shared_jira, "auth_type": "basic"},
+                            ids["JIRA_STATE_FETCHER"]: {**shared_jira, "auth_type": "basic"},
                         }
 
         # Build the decision summary for the LLM
