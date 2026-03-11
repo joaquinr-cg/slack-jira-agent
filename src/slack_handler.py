@@ -41,6 +41,26 @@ from .langbuilder_client import (
 logger = logging.getLogger(__name__)
 
 
+def _build_chat_jira_tweaks(jira_creds: dict) -> dict[str, dict]:
+    """Build chat-flow Jira tweaks.
+
+    The chat flow contains a basic Jira read node plus a JiraReaderWriter node.
+    The basic Jira node only understands `jira_url`, so when a service-account
+    API gateway URL is available we pass it there directly.
+    """
+    if not jira_creds:
+        return {}
+
+    chat_basic_creds = dict(jira_creds)
+    if jira_creds.get("api_base_url"):
+        chat_basic_creds["jira_url"] = jira_creds["api_base_url"]
+
+    return {
+        CHAT_COMPONENT_ID_JIRA: chat_basic_creds,
+        CHAT_COMPONENT_ID_JIRA_READER_WRITER: dict(jira_creds),
+    }
+
+
 class SlackHandler:
     """Handles all Slack interactions for the JIRA Reviewer Agent."""
 
@@ -218,19 +238,18 @@ class SlackHandler:
                     # Map main-flow component IDs → chat-flow component IDs
                     jira_creds = full_tweaks.get(COMPONENT_ID_JIRA_READER_WRITER, {})
                     if jira_creds:
-                        chat_tweaks[CHAT_COMPONENT_ID_JIRA] = jira_creds
-                        chat_tweaks[CHAT_COMPONENT_ID_JIRA_READER_WRITER] = jira_creds
+                        chat_tweaks.update(_build_chat_jira_tweaks(jira_creds))
                 elif self._get_shared_jira_config():
                     # No PM config but shared JIRA is available
                     shared = self._get_shared_jira_config()
                     jira_creds = {
                         "jira_url": shared.get("jira_url", ""),
+                        "api_base_url": shared.get("api_base_url", ""),
                         "email": shared.get("email", ""),
                         "api_token": shared.get("api_token", ""),
                         "auth_type": "basic",
                     }
-                    chat_tweaks[CHAT_COMPONENT_ID_JIRA] = jira_creds
-                    chat_tweaks[CHAT_COMPONENT_ID_JIRA_READER_WRITER] = jira_creds
+                    chat_tweaks.update(_build_chat_jira_tweaks(jira_creds))
 
             # Use thread_ts as session_id so threaded replies share context
             session_id = f"slack-chat-{thread_ts}"
