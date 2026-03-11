@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     jira_shared_url: Optional[str] = None
     jira_shared_email: Optional[str] = None
     jira_shared_api_token: Optional[str] = None
+    jira_shared_cloud_id: Optional[str] = None
 
     # ==========================================
     # SYNC SCHEDULER CONFIGURATION

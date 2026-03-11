@@ -12,6 +12,8 @@ from typing import Any, Optional
 import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
+from .jira_tenant import build_jira_api_base_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -272,6 +274,12 @@ def build_tweaks_from_pm_config(
 
     # Use shared JIRA service account if PM has no individual token
     if shared_jira and not jira.get("api_token"):
+        logger.info(
+            "Using shared Jira credentials for PM %s (projects=%s, email=%s)",
+            pm_config.get("slack_id", "unknown"),
+            project_key_value or "none",
+            shared_jira.get("email", ""),
+        )
         jira_tweaks = {
             "jira_url": shared_jira.get("jira_url", ""),
             "email": shared_jira.get("email", ""),
@@ -279,7 +287,20 @@ def build_tweaks_from_pm_config(
             "auth_type": "basic",
             "project_key": project_key_value,
         }
+        api_base_url = build_jira_api_base_url(
+            jira_tweaks["jira_url"],
+            jira_tweaks["email"],
+            cloud_id=shared_jira.get("cloud_id"),
+        )
+        if api_base_url:
+            jira_tweaks["api_base_url"] = api_base_url
     elif jira:
+        logger.info(
+            "Using PM-specific Jira credentials for PM %s (projects=%s, email=%s)",
+            pm_config.get("slack_id", "unknown"),
+            project_key_value or "none",
+            jira.get("email", ""),
+        )
         jira_tweaks = {
             "jira_url": jira.get("jira_url", ""),
             "email": jira.get("email", ""),
@@ -287,6 +308,13 @@ def build_tweaks_from_pm_config(
             "auth_type": jira.get("auth_type", "basic"),
             "project_key": project_key_value,
         }
+        api_base_url = build_jira_api_base_url(
+            jira_tweaks["jira_url"],
+            jira_tweaks["email"],
+            cloud_id=jira.get("cloud_id"),
+        )
+        if api_base_url:
+            jira_tweaks["api_base_url"] = api_base_url
     else:
         jira_tweaks = {}
 

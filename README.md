@@ -260,6 +260,30 @@ slack_jira_agent/
 - Check AtlassianMCP has correct credentials
 - Review LangBuilder flow logs for specific errors
 
+### Shared Jira service account cannot view tickets
+
+This service passes shared Jira credentials from `JIRA_SHARED_URL`, `JIRA_SHARED_EMAIL`, and
+`JIRA_SHARED_API_TOKEN` into the LangBuilder Jira components at runtime. If the flow says the
+account cannot view tickets, validate the Jira account itself from the host:
+
+```bash
+python scripts/check_jira_access.py --project YOURPROJECT
+```
+
+If authentication succeeds but project or issue checks fail, the service account usually needs one
+or more of the following in Jira:
+
+- Jira product access on the site
+- `Browse Projects` permission for the target project
+- membership in the project role or group used by that permission scheme
+- access through any issue security scheme used by the project
+
+If you are using an Atlassian *service account* token, note that Atlassian scopes those tokens and
+they must call the API gateway URL (`api.atlassian.com/ex/jira/<cloudId>`) instead of the site URL
+(`your-site.atlassian.net`). In this repo, the microservice resolves that from the configured Jira
+site URL and passes a separate `api_base_url` into the LangBuilder Jira components, while keeping
+the normal site URL for browser links like `/browse/LAN-170`.
+
 ### LangBuilder errors
 
 - Check flow URL and ID are correct

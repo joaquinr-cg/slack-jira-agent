@@ -12,6 +12,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from .config import Settings
 from .cron_helper import natural_language_to_cron
 from .file_extractor import extract_text_from_slack_file
+from .jira_tenant import build_jira_api_base_url
 from .db import (
     AuditEntry,
     AuditEventType,
@@ -600,11 +601,7 @@ class SlackHandler:
                 shared_jira_configured = bool(self.settings.jira_shared_api_token)
                 if shared_jira_configured:
                     # Optional override fields — use them if provided, else empty (shared account)
-                    jira_token = (
-                        values.get("jira_token_block", {}).get("jira_token_input", {}).get("value", "")
-                        or existing_secrets.get("existing_jira_token", "")
-                        or ""
-                    )
+                    jira_token = values.get("jira_token_block", {}).get("jira_token_input", {}).get("value", "") or ""
                     jira_url = values.get("jira_url_block", {}).get("jira_url_input", {}).get("value", "") or ""
                     jira_email = values.get("jira_email_block", {}).get("jira_email_input", {}).get("value", "") or ""
                 else:
@@ -661,11 +658,16 @@ class SlackHandler:
                 current = await self.dynamodb.get_pm_config(user_id)
                 current_jira = current.get("jira_config", {}) if current else {}
 
+                shared_jira_configured = bool(self.settings.jira_shared_api_token)
                 new_token = values["jira_token_block"]["jira_token_input"]["value"]
                 jira_config = {
                     "jira_url": values["jira_url_block"]["jira_url_input"]["value"],
                     "email": values["jira_email_block"]["jira_email_input"]["value"],
-                    "api_token": new_token if new_token else current_jira.get("api_token", ""),
+                    "api_token": (
+                        new_token
+                        if shared_jira_configured
+                        else (new_token if new_token else current_jira.get("api_token", ""))
+                    ),
                     "project_keys": [k.strip() for k in values["jira_project_block"]["jira_project_input"]["value"].split(",") if k.strip()],
                     "auth_type": current_jira.get("auth_type", "basic"),
                 }
@@ -2026,11 +2028,20 @@ class SlackHandler:
         """
         if not self.settings.jira_shared_api_token:
             return None
-        return {
+        shared_config = {
             "jira_url": self.settings.jira_shared_url or "",
             "email": self.settings.jira_shared_email or "",
             "api_token": self.settings.jira_shared_api_token,
+            "cloud_id": self.settings.jira_shared_cloud_id or "",
         }
+        api_base_url = build_jira_api_base_url(
+            shared_config["jira_url"],
+            shared_config["email"],
+            cloud_id=shared_config["cloud_id"] or None,
+        )
+        if api_base_url:
+            shared_config["api_base_url"] = api_base_url
+        return shared_config
 
     async def _manual_check_transcripts(
         self, client: AsyncWebClient, channel_id: str, user_id: str
@@ -2235,31 +2246,54 @@ class SlackHandler:
         """Open modal to update JIRA credentials."""
         existing = await self.dynamodb.get_pm_config(user_id)
         jira = existing.get("jira_config", {}) if existing else {}
+        shared_jira_configured = bool(self.settings.jira_shared_api_token)
 
         blocks = [
+            *(
+                [{
+                    "type": "context",
+                    "elements": [{
+                        "type": "mrkdwn",
+                        "text": "_Shared JIRA service account is enabled. Leave override fields empty to use the shared account._",
+                    }],
+                }]
+                if shared_jira_configured
+                else []
+            ),
             {
                 "type": "input", "block_id": "jira_url_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "jira_url_input",
+                    "placeholder": {"type": "plain_text", "text": "https://company.atlassian.net"},
                     **({"initial_value": jira["jira_url"]} if jira.get("jira_url") else {}),
                 },
-                "label": {"type": "plain_text", "text": "JIRA URL"},
+                "label": {"type": "plain_text", "text": "JIRA URL" if not shared_jira_configured else "JIRA URL (optional override)"},
+                "optional": shared_jira_configured,
             },
             {
                 "type": "input", "block_id": "jira_email_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "jira_email_input",
+                    "placeholder": {"type": "plain_text", "text": "you@company.com"},
                     **({"initial_value": jira["email"]} if jira.get("email") else {}),
                 },
-                "label": {"type": "plain_text", "text": "JIRA Email"},
+                "label": {"type": "plain_text", "text": "JIRA Email" if not shared_jira_configured else "JIRA Email (optional override)"},
+                "optional": shared_jira_configured,
             },
             {
                 "type": "input", "block_id": "jira_token_block",
                 "element": {
                     "type": "plain_text_input", "action_id": "jira_token_input",
-                    "placeholder": {"type": "plain_text", "text": "Leave empty to keep current token"},
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": (
+                            "Leave empty to keep current token"
+                            if not shared_jira_configured
+                            else "Leave empty to use shared account"
+                        ),
+                    },
                 },
-                "label": {"type": "plain_text", "text": "JIRA API Token"},
+                "label": {"type": "plain_text", "text": "JIRA API Token" if not shared_jira_configured else "JIRA API Token (optional override)"},
                 "optional": True,
             },
             {

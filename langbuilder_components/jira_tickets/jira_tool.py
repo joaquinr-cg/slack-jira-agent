@@ -74,6 +74,14 @@ class JiraReaderWriterComponent(Component):
             required=False,
             placeholder="https://your-domain.atlassian.net",
         ),
+        StrInput(
+            name="api_base_url",
+            display_name="API Base URL",
+            info="Optional REST API base URL. Leave empty for normal Jira site access. For service accounts this can be https://api.atlassian.com/ex/jira/<cloudId>.",
+            required=False,
+            advanced=True,
+            placeholder="https://api.atlassian.com/ex/jira/<cloudId>",
+        ),
         DataInput(
             name="email_input",
             display_name="Email (from component)",
@@ -314,6 +322,7 @@ class JiraReaderWriterComponent(Component):
 
         # Fall back to manual credentials or environment variables
         jira_url = self.jira_url or os.getenv("JIRA_URL", "")
+        api_base_url = self.api_base_url or os.getenv("JIRA_API_BASE_URL", "")
         email = self._get_email_from_input() or self.email or os.getenv("JIRA_EMAIL", "")
         api_token = self.api_token or os.getenv("JIRA_API_KEY", "")
 
@@ -340,6 +349,8 @@ class JiraReaderWriterComponent(Component):
         # Validate URL format
         if not jira_url.startswith(("http://", "https://")):
             raise ValueError("Jira URL must start with http:// or https://")
+        if api_base_url and not api_base_url.startswith(("http://", "https://")):
+            raise ValueError("API base URL must start with http:// or https://")
 
         # Build auth headers
         if self.auth_type == "basic":
@@ -361,6 +372,7 @@ class JiraReaderWriterComponent(Component):
 
         return {
             "jira_url": jira_url.rstrip("/"),
+            "api_base_url": (api_base_url or jira_url).rstrip("/"),
             "email": email,
             "headers": headers,
             "auth_type": self.auth_type,
@@ -411,7 +423,7 @@ class JiraReaderWriterComponent(Component):
         """Create authenticated HTTP client."""
         auth_data = self._get_auth_data()
         return httpx.Client(
-            base_url=auth_data["jira_url"],
+            base_url=auth_data.get("api_base_url", auth_data["jira_url"]),
             headers=auth_data["headers"],
             timeout=float(self.timeout),
         )
