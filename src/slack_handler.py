@@ -284,8 +284,6 @@ class SlackHandler:
                     session_id=session_id,
                     message=clean_text,
                     extra_tweaks=chat_tweaks,
-                    base_url=self.settings.langbuilder_chat_flow_url,
-                    api_key=self.settings.langbuilder_chat_api_key,
                 )
 
                 # Replace the thinking message with the actual reply
