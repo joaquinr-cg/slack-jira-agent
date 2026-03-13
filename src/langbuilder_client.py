@@ -188,6 +188,7 @@ class LangBuilderClient:
         payload = {
             "output_type": "chat",
             "input_type": "chat",
+            "input_value": message,
             "session_id": session_id,
             "tweaks": tweaks,
         }
