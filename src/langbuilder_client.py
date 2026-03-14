@@ -93,12 +93,9 @@ class LangBuilderClient:
         """
         input_value_str = json.dumps(input_data)
 
-        # Build payload for Run API with tweaks
-        tweaks = {
-            self.chat_input_id: {
-                "input_value": input_value_str
-            }
-        }
+        # Build payload – Langflow 1.8.0 requires input_value at top level
+        # and no longer allows it simultaneously inside a ChatInput tweak.
+        tweaks = {}
 
         # Merge PM-specific tweaks (JIRA creds, GDrive creds, etc.)
         if extra_tweaks:
@@ -107,6 +104,7 @@ class LangBuilderClient:
         payload = {
             "output_type": "chat",
             "input_type": "chat",
+            "input_value": input_value_str,
             "session_id": session_id,
             "tweaks": tweaks,
         }
@@ -181,7 +179,8 @@ class LangBuilderClient:
         """
         endpoint = f"{self.flow_url}/api/v1/run/{flow_id}"
 
-        tweaks = {chat_input_id: {"input_value": message}}
+        # Langflow 1.8.0: input_value at top level only, not in ChatInput tweak
+        tweaks = {}
         if extra_tweaks:
             tweaks.update(extra_tweaks)
 
