@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     # Allows users to talk to the bot directly to check/update JIRA.
     # ==========================================
     langbuilder_chat_flow_id: Optional[str] = None
+    langbuilder_chat_api_key: Optional[str] = None  # Override API key for chat flow
     langbuilder_chat_input_id: str = "ChatInput-Ugj1E"
     langbuilder_chat_file_reader_id: Optional[str] = None  # SlackFileReader component ID
 

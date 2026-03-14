@@ -163,6 +163,7 @@ class LangBuilderClient:
         session_id: str,
         message: str,
         extra_tweaks: Optional[dict[str, Any]] = None,
+        api_key: Optional[str] = None,
     ) -> str:
         """
         Run a conversational LangBuilder flow and return the text response.
@@ -173,6 +174,7 @@ class LangBuilderClient:
             session_id: Session ID for multi-turn memory.
             message: Plain text message from the user.
             extra_tweaks: Optional component tweaks (e.g. JIRA credentials).
+            api_key: Optional override API key (defaults to self.api_key).
 
         Returns:
             The assistant's text reply.
@@ -192,6 +194,11 @@ class LangBuilderClient:
             "tweaks": tweaks,
         }
 
+        headers = {"Content-Type": "application/json"}
+        key = api_key if api_key is not None else self.api_key
+        if key:
+            headers["x-api-key"] = key
+
         logger.info("LANGBUILDER CHAT REQUEST – session=%s endpoint=%s", session_id, endpoint)
 
         try:
@@ -199,7 +206,7 @@ class LangBuilderClient:
                 response = await client.post(
                     endpoint,
                     json=payload,
-                    headers=self._get_headers(),
+                    headers=headers,
                 )
 
                 if response.status_code == 200:
